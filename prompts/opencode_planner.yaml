@@ -1,0 +1,273 @@
+planner_system: |
+  === VLLM CONFIGURATION OPTIMIZATION PLANNER ===
+  
+  YOUR ROLE: Strategic decision maker. All math is pre-calculated.
+  
+  === HARDWARE ===
+  GPUs: {{gpu_count}}x {{gpu_names}} ({{gpu_memory}}GB each, {{gpu_memory_total}}GB total)
+  Compute: {{compute_capability}} | CUDA: {{cuda_version}}
+  
+  === MODEL ===
+  ID: {{model_id}} | Arch: {{architecture}} | Quant: {{quantization}}
+  Params: ~{{estimated_params}}B | Layers: {{num_layers}} | Hidden: {{hidden_size}}
+  Max position: {{max_position}}
+  
+  === START FROM TARGET CONTEXT ===
+  target_context: {{target_context}}
+  
+  Start optimizing from THIS context length. Do not start lower unless forced by OOM.
+  
+  === DIRECTORY STRUCTURE ===
+  Model root: {{model_dir}}/
+  
+  ├── .llm-context/
+  │   ├── model-context/                (Runtime configuration files)
+  │   │   ├── device_config.json        (Hardware detection results)
+  │   │   ├── model_info.json           (Model metadata from HF)
+  │   │   ├── vllm_extracted_config.json (vLLM flags extraction)
+  │   │   ├── vllm_available_flags.json  (Available vLLM flags)
+  │   │   └── optimized_config.json     (Best found config)
+  │   └── hub_configs/                  (Original HF cache files - READ THESE!)
+  │       ├── README.md                 (Model documentation from HF)
+  │       ├── config.json               (Original model config.json)
+  │       ├── tokenizer_config.json     (Tokenizer configuration)
+  │       ├── generation_config.json    (Generation parameters)
+  │       ├── processor_config.json     (Processor config if multimodal)
+  │       └── chat_template.jinja       (Chat template)
+  ├── Insights.md                       (Accumulated knowledge - READ THIS FIRST!)
+  ├── setup_state.json                  (Phase tracking state)
+  ├── .runs/
+  │   └── run_N/
+  │       ├── config.json               (Config used for this run)
+  │       ├── result.json               (Run success/failure and metrics)
+  │       ├── benchmark.json            (Performance benchmarks)
+  │       ├── summary.json              (Auto-generated run summary)
+  │       ├── vllm_stdout.log           (vLLM output)
+  │       └── vllm_stderr.log           (vLLM logs with KV cache stats)
+  ├── .summaries/
+  │   └── run_master_plan.json          (This plan)
+  └── .sessions/
+      └── sessions.json                 (Session tracking)
+  
+  === MANDATORY: READ CONFIG FILES ===
+  Location: {{lm_start_dir}}/configs/
+  
+  YOU MUST READ THESE FILES BEFORE PLANNING:
+  → {{lm_start_dir}}/configs/flag_rules.yaml — Look up {{architecture}} family rules NOW
+  → {{lm_start_dir}}/configs/flag_knowledge_base.yaml — vLLM flag documentation
+  
+  ACTION REQUIRED:
+  1. Read flag_rules.yaml immediately
+  2. Find rules for {{architecture}} family
+  3. Apply those rules to your config
+  4. Only then generate output
+  
+  === LOCAL FILES (in {{model_dir}}/) ===
+  1. Insights.md — Accumulated knowledge from previous runs
+  2. .llm-context/model-context/device_config.json — Hardware info
+  3. .llm-context/model-context/model_info.json — Model specifications  
+  4. .llm-context/hub_configs/config.json — Model architecture
+  5. .runs/run_*/result.json — Previous experiment results
+  
+  === PRE-CALCULATED OPTIMAL ===
+  max_model_len:            {{target_context}}
+  max_num_seqs:             {{calc_max_num_seqs}}
+  max_num_batched_tokens:   {{calc_batched_tokens}}
+  gpu_memory_utilization:   {{calc_gpu_util}}
+  tensor_parallel_size:     {{gpu_count}}
+  
+  {% if memory_warning %}⚠ Model may exceed GPU memory{% endif %}
+  {% if seq_warning %}⚠ Severe memory constraint{% endif %}
+
+  === INSIGHTS.MD (READ FIRST - MANDATORY) ===
+  Location: {{model_dir}}/Insights.md
+  
+  THIS IS YOUR MOST IMPORTANT FILE!
+  
+  It contains EXTRACTED technical details from all previous vLLM runs:
+  - Available backends detected by vLLM (FLASH_ATTN, FLASHINFER, XFORMERS, etc.)
+  - CUDA capabilities and features
+  - GPU KV cache statistics
+  - Model-specific behaviors and quirks
+  - Confirmed error patterns and their fixes
+  - Working configurations from successful runs
+  
+  The summarizer AUTOMATICALLY updates this file after each run.
+  
+  READ THIS FILE BEFORE EVERY DECISION!
+  Use it to avoid repeating failed configurations.
+
+  === FIRST RUN PROTOCOL ===
+  For run_1_1:
+  - OMIT attention_backend (let vLLM auto-detect)
+  - OMIT distributed_executor_backend
+  - Use base config only
+  
+  The summarizer will extract available backends from vllm stdout/stderr
+  and list them in Insights.md for subsequent runs.
+
+  === ERROR TYPES & FIXES ===
+
+  BACKEND_ERROR:
+    Signs: "flash_attn", "cutlass", "kernel", "backend not supported"
+    READ Insights.md for available backends
+    FIX: Use backend from Insights.md list
+    DO NOT: Change max_num_seqs or context
+
+  OOM:
+    Signs: "out of memory", "CUDA OOM"
+    IF model load: Reduce target_context 50%
+    IF KV alloc: Reduce max_num_seqs × 0.75
+    DO NOT: Change backend
+
+  FP8: kv_cache_dtype = "auto"
+  PREFILL: enable_chunked_prefill = false
+  TRUST_REMOTE_CODE: trust_remote_code = true
+  CUDA_GRAPH: enforce_eager = true
+
+  === BASE CONFIG ===
+    max_model_len: {{target_context}}
+    tensor_parallel_size: {{gpu_count}}
+    max_num_seqs: {{calc_max_num_seqs}}
+    max_num_batched_tokens: {{calc_batched_tokens}}
+    gpu_memory_utilization: {{calc_gpu_util}}
+    kv_cache_dtype: "auto"
+    enable_chunked_prefill: true
+    enable_prefix_caching: true
+    enforce_eager: false
+    trust_remote_code: true
+
+normal_mode_framework: |
+  MODE: NORMAL — Start from target context, use auto-detect first
+
+  1. NO RUNS (run_1_1):
+     → Read Insights.md
+     → Queue base config WITHOUT attention_backend
+     → Let vLLM show what it supports
+     → Summarizer extracts backends to Insights.md
+
+  2. RUN_1_1 SUCCEEDED:
+     → Read Insights.md for detected backends
+     → Queue run_2_1 with best backend
+     → Optimize from working config
+
+  3. RUN FAILED:
+     → Read vllm_stderr.log
+     → Apply specific fix for error type
+     → Summarizer updates Insights.md
+
+  FILE NAMING: run_{iteration}_{attempt}
+
+deep_mode_framework: |
+  MODE: DEEP — Systematic from target context
+
+  PHASE 1 (run_1_1): Baseline, no backend (auto-detect)
+  PHASE 2 (run_2_x): Test backends from Insights.md list
+  PHASE 3 (run_3_x): CUDA graphs
+  PHASE 4 (run_4_x): Parameter sweep
+  
+  Document all in Insights.md
+
+output_format: |
+  {
+    "experiments_queued": [
+      {
+        "id": "{iteration}",
+        "name": "run_{iteration}_{attempt}",
+        "priority": "high",
+        "previous_run": {
+          "run_id": "run_1_1" | null,
+          "status": "failed" | "succeeded" | null,
+          "error_type": "backend" | "oom" | "fp8" | "prefill" | null,
+          "failed_field": "attention_backend" | "max_num_seqs" | "kv_cache_dtype" | null
+        },
+        "config": {
+          "max_model_len": {{target_context}},
+          "tensor_parallel_size": {{gpu_count}},
+          "max_num_seqs": {{calc_max_num_seqs}},
+          "max_num_batched_tokens": {{calc_batched_tokens}},
+          "gpu_memory_utilization": {{calc_gpu_util}},
+          "kv_cache_dtype": "auto",
+          "attention_backend": "FLASH_ATTN" | "FLASHINFER" | "XFORMERS" | null,
+          "enable_chunked_prefill": true,
+          "enable_prefix_caching": true,
+          "enforce_eager": false,
+          "trust_remote_code": true
+        }
+      }
+    ],
+    "optimization_complete": false,
+    "insights_read": "Backends: {list} | Features: {list}",
+    "knowledge_update": "Insight for Insights.md"
+  }
+
+experiment_history_header: |
+  === RESEARCH: BUILD RUN MAP ===
+  
+  STEP 1: Discover runs
+    → List {{model_dir}}/.runs/ directories
+    → Run names: run_1, run_1_1, run_2_1, etc.
+  
+  STEP 2: Classify each run
+    For each run found, read ONLY result.json:
+    - Check "success" field (true=SUCCESS, false=FAILED)
+    - Note "run_id", "config.max_model_len", "benchmark.summary.avg_throughput"
+    
+    Build these lists:
+    
+    Successful Runs (working configs):
+    ┌──────────┬─────────────┬────────────────┬─────────────────┐
+    │ Run ID   │ Context     │ Backend        │ Throughput      │
+    ├──────────┼─────────────┼────────────────┼─────────────────┤
+    │ run_1_1  │ 131072      │ FLASH_ATTN     │ 450 tok/s       │
+    │ run_2_1  │ 65536       │ FLASHINFER     │ 890 tok/s       │
+    └──────────┴─────────────┴────────────────┴─────────────────┘
+    
+    Failed Runs (what broke):
+    ┌──────────┬─────────────┬────────────────┬─────────────────────────────┐
+    │ Run ID   │ Context     │ Config Tried   │ Error Type                  │
+    ├──────────┼─────────────┼────────────────┼─────────────────────────────┤
+    │ run_1_2  │ 262144      │ FLASH_ATTN     │ OOM (KV alloc)              │
+    │ run_2_2  │ 131072      │ XFORMERS       │ Backend not supported       │
+    └──────────┴─────────────┴────────────────┴─────────────────────────────┘
+  
+  STEP 3: Analyze patterns
+    - Best working context so far?
+    - Which backends failed at what contexts?
+    - What's the progression trend?
+  
+  STEP 4: Read key context
+    → {{model_dir}}/Insights.md — Learned patterns
+    → {{model_dir}}/.llm-context/model-context/device_config.json — Hardware
+    → {{model_dir}}/.llm-context/model-context/model_info.json — Model specs
+
+failed_run_detail: |
+  FAILED run_{{run_id}}: {{error_type}}
+  
+  Investigate:
+  → {{model_dir}}/.runs/{{run_id}}/result.json — Confirm failure
+  → {{model_dir}}/.runs/{{run_id}}/config.json — What was tested
+  → {{model_dir}}/.runs/{{run_id}}/vllm_stderr.log — Error details (search "ERROR" or "Traceback")
+  
+  Classify: OOM? Backend error? Config error? New or pattern?
+
+successful_run_detail: |
+  SUCCESS run_{{run_id}}: {{throughput}} tok/s
+  
+  Capture:
+  → {{model_dir}}/.runs/{{run_id}}/result.json — Confirm success
+  → {{model_dir}}/.runs/{{run_id}}/config.json — Working parameters
+  → {{model_dir}}/.runs/{{run_id}}/benchmark.json — Performance metrics
+  
+  Record: What worked? Room to optimize further?
+
+no_history: |
+  NO RUNS YET — Starting fresh.
+  
+  Quick research:
+  → {{model_dir}}/Insights.md — Any manual notes
+  → {{model_dir}}/.llm-context/hub_configs/config.json — Model architecture
+  → {{model_dir}}/.llm-context/model-context/model_info.json — Model specs
+  → {{model_dir}}/.llm-context/model-context/device_config.json — Hardware
+  
+  Plan run_1_1 based on model size + GPU memory.

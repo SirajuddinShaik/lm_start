@@ -1,0 +1,872 @@
+# vLLM Flag Knowledge Base
+# Comprehensive reference for all vLLM flags organized by category
+# Version: v0.8.2+ compatible
+
+metadata:
+  version: "1.0.0"
+  vllm_version: ">=0.8.2"
+  last_updated: "2025-04-02"
+  total_flags: 83
+
+# ============================================================================
+# CATEGORY 1: Model Loading (12 flags)
+# ============================================================================
+model_loading:
+  description: "Flags for loading models, quantization, and dtype"
+  
+  trust_remote_code:
+    flag: "--trust-remote-code"
+    env_var: "VLLM_TRUST_REMOTE_CODE"
+    type: "boolean"
+    default: false
+    description: "Trust remote code from HuggingFace model hub"
+    when_to_use: "Required for many custom architectures (DeepSeek, QwQ, Kimi)"
+    impact: "Enables custom model implementations"
+    
+  dtype:
+    flag: "--dtype"
+    type: "choice"
+    choices: ["auto", "half", "float16", "bfloat16", "float", "float32"]
+    default: "auto"
+    description: "Data type for model weights and activations"
+    when_to_use: "Use 'auto' for most cases; 'bfloat16' for training stability; 'float16' for older GPUs"
+    impact: "Memory usage, numerical precision"
+    
+  quantization:
+    flag: "--quantization"
+    type: "choice"
+    choices: [null, "awq", "gptq", "squeezellm", "fp8", "compressed-tensors", "bitsandbytes", "gguf", "marlin", "gptq_marlin", "awq_marlin", "gptq_bitblas"]
+    default: null
+    description: "Quantization method for model weights"
+    when_to_use: "Use FP8 on H100/H200; AWQ/GPTQ for 4-bit inference; bitsandbytes for QLoRA"
+    impact: "Major memory reduction, slight quality trade-off"
+    
+  load_format:
+    flag: "--load-format"
+    type: "choice"
+    choices: ["auto", "pt", "safetensors", "npcache", "dummy"]
+    default: "auto"
+    description: "Format to load model weights"
+    when_to_use: "'safetensors' is fastest and safest; 'dummy' for testing"
+    impact: "Loading speed, memory during load"
+    
+  kv_cache_dtype:
+    flag: "--kv-cache-dtype"
+    type: "choice"
+    choices: ["auto", "fp8", "fp8_e4m3", "fp8_e5m2"]
+    default: "auto"
+    description: "Data type for KV cache"
+    when_to_use: "Use 'fp8' on H100/H200 for 50% KV cache memory reduction"
+    impact: "KV cache memory, slight accuracy trade-off"
+    
+  max_model_len:
+    flag: "--max-model-len"
+    type: "integer"
+    default: null
+    description: "Maximum sequence length for the model"
+    when_to_use: "Set to model's max_position_embeddings for full capability"
+    impact: "KV cache memory allocation, context window"
+    
+  tokenizer:
+    flag: "--tokenizer"
+    type: "string"
+    default: null
+    description: "Path to custom tokenizer"
+    when_to_use: "When using different tokenizer than model"
+    impact: "Tokenization behavior"
+    
+  tokenizer_mode:
+    flag: "--tokenizer-mode"
+    type: "choice"
+    choices: ["auto", "slow", "fast"]
+    default: "auto"
+    description: "Tokenizer loading mode"
+    when_to_use: "'fast' for speed, 'slow' for compatibility"
+    impact: "Tokenization speed"
+    
+  chat_template:
+    flag: "--chat-template"
+    type: "string"
+    default: null
+    description: "Path or inline Jinja2 chat template"
+    when_to_use: "When model lacks built-in template or needs override"
+    impact: "Chat formatting, special token handling"
+    
+  chat_template_text_format:
+    flag: "--chat-template-text-format"
+    type: "choice"
+    choices: ["string", "openai", "tools"]
+    default: "string"
+    description: "Format for text-based chat completion"
+    when_to_use: "'tools' for tool-aware formatting"
+    impact: "Message formatting"
+    
+  limit_mm_per_prompt:
+    flag: "--limit-mm-per-prompt"
+    type: "dict"
+    default: {}
+    description: "Maximum multimodal inputs per prompt"
+    when_to_use: "For vision models to limit image/video inputs"
+    impact: "Memory for multimodal processing"
+    
+  mm_cache_preprocessor:
+    flag: "--mm-cache-preprocessor"
+    type: "boolean"
+    default: false
+    description: "Cache multimodal preprocessor outputs"
+    when_to_use: "Enable for repeated similar multimodal inputs"
+    impact: "Memory/speed trade-off for multimodal"
+
+# ============================================================================
+# CATEGORY 2: Parallelism (10 flags)
+# ============================================================================
+parallelism:
+  description: "Flags for tensor, pipeline, and expert parallelism"
+  
+  tensor_parallel_size:
+    flag: "--tensor-parallel-size"
+    type: "integer"
+    default: 1
+    description: "Number of GPUs for tensor parallelism"
+    when_to_use: "Required for large models; use all GPUs for max performance"
+    impact: "Memory distribution, communication overhead"
+    
+  pipeline_parallel_size:
+    flag: "--pipeline-parallel-size"
+    type: "integer"
+    default: 1
+    description: "Number of pipeline stages"
+    when_to_use: "For very large models spanning many nodes"
+    impact: "Inter-node communication, throughput"
+    
+  data_parallel_size:
+    flag: "--data-parallel-size"
+    type: "integer"
+    default: 1
+    description: "Number of data parallel replicas"
+    when_to_use: "For high-throughput serving with duplicate models"
+    impact: "Throughput scaling, memory duplication"
+    
+  enable_expert_parallel:
+    flag: "--enable-expert-parallel"
+    type: "boolean"
+    default: false
+    description: "Enable expert parallelism for MoE models"
+    when_to_use: "REQUIRED for MoE models (Mixtral, DeepSeek-V3)"
+    impact: "MoE routing efficiency"
+    
+  pipeline_parallel_split_points:
+    flag: "--pipeline-parallel-split-points"
+    type: "string"
+    default: null
+    description: "Layer indices for pipeline splits"
+    when_to_use: "Manual pipeline partitioning"
+    impact: "Load balancing across stages"
+    
+  max_parallel_loading_workers:
+    flag: "--max-parallel-loading-workers"
+    type: "integer"
+    default: null
+    description: "Parallel workers for model loading"
+    when_to_use: "Increase for faster multi-GPU loading"
+    impact: "Model loading speed"
+    
+  ray_workers_use_nsight:
+    flag: "--ray-workers-use-nsight"
+    type: "boolean"
+    default: false
+    description: "Enable NVIDIA Nsight profiling for Ray workers"
+    when_to_use: "Debugging performance issues"
+    impact: "Profiling overhead"
+    
+  distributed_executor_backend:
+    flag: "--distributed-executor-backend"
+    type: "choice"
+    choices: ["ray", "mp", "external", "external_ray"]
+    default: "ray"
+    description: "Backend for distributed execution"
+    when_to_use: "'ray' for multi-node; 'mp' for single-node multi-GPU"
+    impact: "Communication efficiency"
+    
+  all2all_backend:
+    flag: "--all2all-backend"
+    type: "choice"
+    choices: ["nccl", "deepspeed", "deepspeed_fp8", "deepep_low_latency"]
+    default: "nccl"
+    description: "Backend for all-to-all communication in MoE"
+    when_to_use: "'deepep_low_latency' for DeepSeek models"
+    impact: "MoE communication efficiency"
+    
+  shm_broadcast_bucket_size:
+    flag: "--shm-broadcast-bucket-size"
+    type: "integer"
+    default: 67108864
+    description: "Shared memory broadcast bucket size"
+    when_to_use: "Tune for TP communication"
+    impact: "Tensor parallelism efficiency"
+
+# ============================================================================
+# CATEGORY 3: Memory and Performance (14 flags)
+# ============================================================================
+memory_performance:
+  description: "Flags for GPU memory utilization and performance tuning"
+  
+  gpu_memory_utilization:
+    flag: "--gpu-memory-utilization"
+    type: "float"
+    range: [0.0, 1.0]
+    default: 0.90
+    description: "Fraction of GPU memory to use for model and KV cache"
+    when_to_use: "Increase to 0.95 for max capacity; reduce to 0.80 if OOM"
+    impact: "Available KV cache memory, OOM risk"
+    
+  max_num_batched_tokens:
+    flag: "--max-num-batched-tokens"
+    type: "integer"
+    default: null
+    description: "Maximum number of tokens to batch in single iteration"
+    when_to_use: "Reduce if OOM with long contexts"
+    impact: "Batch throughput, memory usage"
+    
+  max_num_seqs:
+    flag: "--max-num-seqs"
+    type: "integer"
+    default: 256
+    description: "Maximum number of sequences per iteration"
+    when_to_use: "Reduce if high concurrency causes OOM"
+    impact: "Concurrent request capacity"
+    
+  max_logprobs:
+    flag: "--max-logprobs"
+    type: "integer"
+    default: 20
+    description: "Maximum number of log probabilities to return"
+    when_to_use: "Increase for sampling analysis"
+    impact: "Response size, computation"
+    
+  disable_log_stats:
+    flag: "--disable-log-stats"
+    type: "boolean"
+    default: false
+    description: "Disable periodic statistics logging"
+    when_to_use: "For cleaner logs in production"
+    impact: "Logging overhead"
+    
+  disable_log_requests:
+    flag: "--disable-log-requests"
+    type: "boolean"
+    default: false
+    description: "Disable request logging"
+    when_to_use: "For privacy or reduced logging"
+    impact: "Logging verbosity"
+    
+  quantization_param_path:
+    flag: "--quantization-param-path"
+    type: "string"
+    default: null
+    description: "Path to quantization parameters"
+    when_to_use: "Custom quantization configs"
+    impact: "Quantization behavior"
+    
+  preemption_mode:
+    flag: "--preemption-mode"
+    type: "choice"
+    choices: ["swap", "recompute"]
+    default: "swap"
+    description: "Mode for preempting sequences"
+    when_to_use: "'swap' for KV cache eviction; 'recompute' for recomputation"
+    impact: "Memory vs compute trade-off"
+    
+  block_size:
+    flag: "--block-size"
+    type: "choice"
+    choices: [8, 16, 32, 64, 128]
+    default: 16
+    description: "Token block size for PagedAttention"
+    when_to_use: "16 or 32 for most cases; larger for very long contexts"
+    impact: "KV cache fragmentation, memory efficiency"
+    
+  num_gpu_blocks_override:
+    flag: "--num-gpu-blocks-override"
+    type: "integer"
+    default: null
+    description: "Override number of GPU blocks for KV cache"
+    when_to_use: "Manual KV cache sizing"
+    impact: "KV cache capacity"
+    
+  num_lookahead_slots:
+    flag: "--num-lookahead-slots"
+    type: "integer"
+    default: 0
+    description: "Number of speculative lookahead slots"
+    when_to_use: "For speculative decoding"
+    impact: "Speculation overhead"
+    
+  seed:
+    flag: "--seed"
+    type: "integer"
+    default: 0
+    description: "Random seed for reproducibility"
+    when_to_use: "Set for deterministic sampling"
+    impact: "Reproducibility"
+    
+  swap_space:
+    flag: "--swap-space"
+    type: "integer"
+    default: 4
+    description: "CPU swap space size in GB per GPU"
+    when_to_use: "Increase if frequent preemption occurs"
+    impact: "Preemption recovery capability"
+    
+  enforce_eager:
+    flag: "--enforce-eager"
+    type: "boolean"
+    default: false
+    description: "Disable CUDA graph capture"
+    when_to_use: "For debugging or if CUDAGraph causes issues"
+    impact: "Small latency increase, easier debugging"
+
+# ============================================================================
+# CATEGORY 4: Batching (6 flags)
+# ============================================================================
+batching:
+  description: "Flags for request batching and scheduling"
+  
+  enable_chunked_prefill:
+    flag: "--enable-chunked-prefill"
+    type: "boolean"
+    default: true
+    description: "Enable chunked prefill for improved throughput"
+    when_to_use: "Enable for better interleaving of prefill and decode"
+    impact: "Throughput improvement, TTFT vs TPUT trade-off"
+    
+  enable_prefix_caching:
+    flag: "--enable-prefix-caching"
+    type: "boolean"
+    default: false
+    description: "Cache common prompt prefixes"
+    when_to_use: "Enable for repeated similar prompts (system prompts, templates)"
+    impact: "Memory for cache, prefill speedup"
+    
+  max_cpu_loras:
+    flag: "--max-cpu-loras"
+    type: "integer"
+    default: null
+    description: "Maximum LoRAs to keep in CPU memory"
+    when_to_use: "For multi-LoRA serving"
+    impact: "LoRA switching efficiency"
+    
+  max_loras:
+    flag: "--max-loras"
+    type: "integer"
+    default: 1
+    description: "Maximum number of LoRAs per batch"
+    when_to_use: "Increase for concurrent LoRA inference"
+    impact: "LoRA memory overhead"
+    
+  max_lora_rank:
+    flag: "--max-lora-rank"
+    type: "integer"
+    default: 16
+    description: "Maximum LoRA rank supported"
+    when_to_use: "Set to highest rank among LoRAs"
+    impact: "LoRA compute overhead"
+    
+  lora_extra_vocab_size:
+    flag: "--lora-extra-vocab-size"
+    type: "integer"
+    default: 256
+    description: "Extra vocabulary size for LoRA"
+    when_to_use: "When LoRA adds new tokens"
+    impact: "Embedding table size"
+
+# ============================================================================
+# CATEGORY 5: Optimization (8 flags)
+# ============================================================================
+optimization:
+  description: "Flags for advanced performance optimizations"
+  
+  enable_prefix_caching_optimization:
+    flag: "--enable-prefix-caching"
+    type: "boolean"
+    default: false
+    description: "Enable automatic prefix caching"
+    when_to_use: "For workloads with common prefixes"
+    impact: "Reduced redundant computation"
+    
+  max_cudagraph_capture_size:
+    flag: "--max-cudagraph-capture-size"
+    type: "integer"
+    default: 128
+    description: "Maximum batch size for CUDA graph capture"
+    when_to_use: "Increase to 128 for production; set to 0 to disable"
+    impact: "Small batch latency"
+    
+  compilation_config:
+    flag: "--compilation-config"
+    type: "json"
+    default: null
+    description: "Torch.compile configuration"
+    when_to_use: "'{'cudagraph_mode': 'FULL_AND_PIECEWISE'}' for max performance"
+    impact: "Compilation overhead vs runtime speed"
+    
+  speculative_model:
+    flag: "--speculative-model"
+    type: "string"
+    default: null
+    description: "Draft model for speculative decoding"
+    when_to_use: "Use smaller model for speculation"
+    impact: "Throughput improvement, draft overhead"
+    
+  num_speculative_tokens:
+    flag: "--num-speculative-tokens"
+    type: "integer"
+    default: null
+    description: "Number of tokens to speculate"
+    when_to_use: "5-7 tokens typically optimal"
+    impact: "Acceptance rate vs overhead"
+    
+  speculative_max_model_len:
+    flag: "--speculative-max-model-len"
+    type: "integer"
+    default: null
+    description: "Max model length for speculative model"
+    when_to_use: "When draft model differs from target"
+    impact: "Speculation capacity"
+    
+  speculative_disable_by_batch_size:
+    flag: "--speculative-disable-by-batch-size"
+    type: "integer"
+    default: null
+    description: "Disable speculation above this batch size"
+    when_to_use: "When overhead outweighs benefit at high batch"
+    impact: "Dynamic speculation control"
+    
+  use_v2_block_manager:
+    flag: "--use-v2-block-manager"
+    type: "boolean"
+    default: true
+    description: "Use v2 block manager for KV cache"
+    when_to_use: "Enabled by default, disable for compatibility"
+    impact: "KV cache management efficiency"
+
+# ============================================================================
+# CATEGORY 6: Parsers (30+ flags)
+# ============================================================================
+parsers:
+  description: "Flags for reasoning and tool-call parsing"
+  
+  # Tool Call Parsers
+  tool_call_parser:
+    flag: "--tool-call-parser"
+    type: "choice"
+    choices: [null, "openai_pythonic", "hermes", "llama3_json", "mistral", "qwen25"]
+    default: null
+    description: "Parser for tool calling responses"
+    when_to_use: "Required for function calling support"
+    impact: "Tool call extraction accuracy"
+    
+  enable_auto_tool_choice:
+    flag: "--enable-auto-tool-choice"
+    type: "boolean"
+    default: false
+    description: "Automatically choose tool parser based on model"
+    when_to_use: "Enable for automatic parser selection"
+    impact: "Convenience vs explicit control"
+    
+  # Reasoning Parsers
+  reasoning_parser:
+    flag: "--reasoning-parser"
+    type: "choice"
+    choices: [null, "deepseek_r1", "kimi_k2", "qwq"]
+    default: null
+    description: "Parser for reasoning model outputs"
+    when_to_use: "For models with thinking tokens (R1, QwQ, Kimi-K2.5)"
+    impact: "Thinking vs response separation"
+    
+  # Model-Specific Parser Configs
+  deepseek_r1:
+    reasoning_parser: "deepseek_r1"
+    chat_template_kwargs:
+      thinking: true
+    description: "DeepSeek-R1 reasoning model"
+    
+  kimi_k2:
+    reasoning_parser: "kimi_k2"
+    tool_call_parser: "kimi_k2"
+    description: "Kimi-K2.5 with reasoning and tools"
+    
+  qwq:
+    reasoning_parser: "qwq"
+    description: "QwQ reasoning model"
+    
+  llama3_json:
+    tool_call_parser: "llama3_json"
+    enable_auto_tool_choice: true
+    description: "Llama 3.1/3.2 JSON tool format"
+    
+  hermes:
+    tool_call_parser: "hermes"
+    description: "Hermes/Qwen2.5 tool format"
+    
+  mistral:
+    tool_call_parser: "mistral"
+    description: "Mistral tool format"
+    
+  pythonic:
+    tool_call_parser: "openai_pythonic"
+    description: "OpenAI-compatible Pythonic tool format"
+
+# ============================================================================
+# CATEGORY 7: Server and API (18 flags)
+# ============================================================================
+server_api:
+  description: "Flags for server configuration and API behavior"
+  
+  host:
+    flag: "--host"
+    type: "string"
+    default: "0.0.0.0"
+    description: "Host to bind server to"
+    when_to_use: "'127.0.0.1' for local only; '0.0.0.0' for all interfaces"
+    impact: "Network accessibility"
+    
+  port:
+    flag: "--port"
+    type: "integer"
+    default: 8000
+    description: "Port to bind server to"
+    when_to_use: "Change if 8000 is in use"
+    impact: "Endpoint accessibility"
+    
+  api_key:
+    flag: "--api-key"
+    type: "string"
+    default: null
+    description: "API key for authentication"
+    when_to_use: "Set for production security"
+    impact: "Access control"
+    
+  uvicorn_log_level:
+    flag: "--uvicorn-log-level"
+    type: "choice"
+    choices: ["debug", "info", "warning", "error", "critical", "trace"]
+    default: "info"
+    description: "Uvicorn logging level"
+    when_to_use: "'warning' for production; 'debug' for troubleshooting"
+    impact: "Log verbosity"
+    
+  allow_credentials:
+    flag: "--allow-credentials"
+    type: "boolean"
+    default: false
+    description: "Allow credentials in CORS"
+    when_to_use: "For cross-origin authenticated requests"
+    impact: "CORS security"
+    
+  allowed_origins:
+    flag: "--allowed-origins"
+    type: "list"
+    default: ["*"]
+    description: "Allowed CORS origins"
+    when_to_use: "Restrict to specific domains in production"
+    impact: "CORS security"
+    
+  allowed_methods:
+    flag: "--allowed-methods"
+    type: "list"
+    default: ["*"]
+    description: "Allowed CORS methods"
+    when_to_use: "Restrict HTTP methods"
+    impact: "CORS security"
+    
+  allowed_headers:
+    flag: "--allowed-headers"
+    type: "list"
+    default: ["*"]
+    description: "Allowed CORS headers"
+    when_to_use: "Restrict headers"
+    impact: "CORS security"
+    
+  ssl_keyfile:
+    flag: "--ssl-keyfile"
+    type: "string"
+    default: null
+    description: "Path to SSL key file"
+    when_to_use: "For HTTPS termination"
+    impact: "TLS security"
+    
+  ssl_certfile:
+    flag: "--ssl-certfile"
+    type: "string"
+    default: null
+    description: "Path to SSL certificate file"
+    when_to_use: "For HTTPS termination"
+    impact: "TLS security"
+    
+  ssl_ca_certs:
+    flag: "--ssl-ca-certs"
+    type: "string"
+    default: null
+    description: "Path to CA certificates"
+    when_to_use: "For client certificate verification"
+    impact: "TLS mutual auth"
+    
+  return_tokens_as_token_ids:
+    flag: "--return-tokens-as-token-ids"
+    type: "boolean"
+    default: false
+    description: "Return tokens as token IDs in response"
+    when_to_use: "For token-level analysis"
+    impact: "Response format"
+    
+  served_model_name:
+    flag: "--served-model-name"
+    type: "string"
+    default: null
+    description: "Model name in API responses"
+    when_to_use: "Override displayed model name"
+    impact: "API client compatibility"
+    
+  response_role:
+    flag: "--response-role"
+    type: "choice"
+    choices: ["assistant", "model"]
+    default: "assistant"
+    description: "Role for chat completion responses"
+    when_to_use: "'model' for OpenAI compatibility"
+    impact: "Response role field"
+    
+  lora_modules:
+    flag: "--lora-modules"
+    type: "list"
+    default: null
+    description: "LoRA modules to serve"
+    when_to_use: "For multi-LoRA serving"
+    impact: "Available LoRA adapters"
+    
+  prompt_adapters:
+    flag: "--prompt-adapters"
+    type: "list"
+    default: null
+    description: "Prompt adapter modules"
+    when_to_use: "For prompt tuning"
+    impact: "Prompt prefix options"
+    
+  skip_tokenizer_init:
+    flag: "--skip-tokenizer-init"
+    type: "boolean"
+    default: false
+    description: "Skip tokenizer initialization"
+    when_to_use: "For debugging or custom tokenization"
+    impact: "API availability"
+
+# ============================================================================
+# CATEGORY 8: Logging and Monitoring (8 flags)
+# ============================================================================
+logging_monitoring:
+  description: "Flags for logging, metrics, and observability"
+  
+  enable_server_load_tracking:
+    flag: "--enable-server-load-tracking"
+    type: "boolean"
+    default: false
+    description: "Track server load metrics"
+    when_to_use: "Enable for monitoring queue depth, batch sizes"
+    impact: "Observability"
+    
+  enable_log_outputs:
+    flag: "--enable-log-outputs"
+    type: "boolean"
+    default: false
+    description: "Log model outputs"
+    when_to_use: "For debugging responses"
+    impact: "Log size, privacy"
+    
+  enable_metrics:
+    flag: "--enable-metrics"
+    type: "boolean"
+    default: false
+    description: "Enable Prometheus metrics endpoint"
+    when_to_use: "Enable for monitoring integration"
+    impact: "Observability"
+    
+  log_stats_interval:
+    flag: "--log-stats-interval"
+    type: "integer"
+    default: 10
+    description: "Interval for stats logging in seconds"
+    when_to_use: "Adjust log frequency"
+    impact: "Log verbosity"
+    
+  stat_log_freq:
+    flag: "--stat-log-freq"
+    type: "integer"
+    default: null
+    description: "Frequency of stat logging"
+    when_to_use: "Deprecated, use log_stats_interval"
+    impact: "Log verbosity"
+    
+  logging_level:
+    flag: "--logging-level"
+    type: "choice"
+    choices: ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+    default: "INFO"
+    description: "vLLM internal logging level"
+    when_to_use: "'DEBUG' for troubleshooting"
+    impact: "Log verbosity"
+    
+  worker_use_ray:
+    flag: "--worker-use-ray"
+    type: "boolean"
+    default: false
+    description: "Use Ray for worker processes"
+    when_to_use: "For multi-node serving"
+    impact: "Process architecture"
+    
+  worker_cls:
+    flag: "--worker-cls"
+    type: "string"
+    default: null
+    description: "Custom worker class"
+    when_to_use: "For custom worker implementations"
+    impact: "Worker behavior"
+
+# ============================================================================
+# Environment Variables (Additional)
+# ============================================================================
+environment_variables:
+  VLLM_ATTENTION_BACKEND:
+    values: ["FLASHINFER", "FLASH_ATTN", "FLASH_ATTN_VLLM_V1", "XFORMERS", "TORCH_SDPA"]
+    default: "FLASH_ATTN"
+    description: "Attention implementation backend"
+    when_to_use: "FLASHINFER for best performance; FLASH_ATTN for compatibility"
+    impact: "Attention computation efficiency"
+    
+  VLLM_ALLOW_LONG_MAX_MODEL_LEN:
+    values: ["0", "1"]
+    default: "0"
+    description: "Allow context lengths longer than safe default"
+    when_to_use: "Set to '1' for models > 32K context"
+    impact: "Enables full context capability"
+    
+  VLLM_LOGGING_LEVEL:
+    values: ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL", "TRACE"]
+    default: "INFO"
+    description: "Logging level"
+    when_to_use: "DEBUG for troubleshooting"
+    impact: "Log verbosity"
+    
+  VLLM_TRACE_FUNCTION:
+    values: ["0", "1"]
+    default: "0"
+    description: "Enable function tracing"
+    when_to_use: "For deep debugging"
+    impact: "Performance overhead"
+    
+  VLLM_WORKER_MULTIPROC_METHOD:
+    values: ["fork", "spawn"]
+    default: "fork"
+    description: "Worker multiprocessing method"
+    when_to_use: "'spawn' for CUDA compatibility issues"
+    impact: "Process startup behavior"
+    
+  TORCH_CUDA_MATMUL_PRECISION:
+    values: ["highest", "high", "medium"]
+    default: "highest"
+    description: "CUDA matmul precision"
+    when_to_use: "'high' for quantized models"
+    impact: "Numerical precision vs speed"
+    
+  NCCL_DEBUG:
+    values: ["WARN", "INFO", "DEBUG"]
+    default: "WARN"
+    description: "NCCL debugging level"
+    when_to_use: "DEBUG for multi-GPU issues"
+    impact: "Communication debugging"
+
+# ============================================================================
+# Reduction Priority Queue (for max-context-first algorithm)
+# ============================================================================
+reduction_priority:
+  description: "Order to reduce parameters when config fails"
+  phases:
+    - name: "batch_tokens"
+      param: "max_num_batched_tokens"
+      values: [65536, 32768, 16384, 8192, 4096, 2048]
+      impact: "Batch throughput"
+      preserve_context: true
+      
+    - name: "batch_seqs"
+      param: "max_num_seqs"
+      values: [256, 128, 64, 32, 16]
+      impact: "Concurrency"
+      preserve_context: true
+      
+    - name: "chunked_prefill"
+      param: "enable_chunked_prefill"
+      values: [true, false]
+      impact: "Throughput/latency trade-off"
+      preserve_context: true
+      
+    - name: "memory_util"
+      param: "gpu_memory_utilization"
+      values: [0.95, 0.90, 0.85, 0.80, 0.75]
+      impact: "Memory headroom"
+      preserve_context: true
+      
+    - name: "attention_backend"
+      param: "VLLM_ATTENTION_BACKEND"
+      values: ["FLASHINFER", "FLASH_ATTN", "FLASH_ATTN_VLLM_V1", "XFORMERS"]
+      impact: "Compatibility"
+      env_var: true
+      preserve_context: true
+      
+    - name: "kv_cache_dtype"
+      param: "kv_cache_dtype"
+      values: ["auto", "fp8"]
+      impact: "KV cache memory"
+      preserve_context: true
+      condition: "h100_or_h200_only"
+      
+    - name: "context_reduction"
+      param: "max_model_len"
+      values: ["max", "75%", "50%", "25%", 32768, 16384, 8192]
+      impact: "Context window"
+      preserve_context: false
+      last_resort: true
+
+# ============================================================================
+# Hardware-Specific Recommendations
+# ============================================================================
+hardware_recommendations:
+  h100_h200:
+    recommended_flags:
+      kv_cache_dtype: "fp8"
+      attention_backend: "FLASHINFER"
+      compilation_config: '{"cudagraph_mode": "FULL_AND_PIECEWISE"}'
+      max_cudagraph_capture_size: 128
+    environment:
+      VLLM_ATTENTION_BACKEND: "FLASHINFER"
+      
+  a100_80gb:
+    recommended_flags:
+      attention_backend: "FLASH_ATTN"
+      compilation_config: '{"cudagraph_mode": "FULL_AND_PIECEWISE"}'
+    environment:
+      VLLM_ATTENTION_BACKEND: "FLASH_ATTN"
+      
+  a100_40gb:
+    recommended_flags:
+      attention_backend: "FLASH_ATTN"
+      gpu_memory_utilization: 0.90
+    environment:
+      VLLM_ATTENTION_BACKEND: "FLASH_ATTN"
+      
+  consumer_gpus:
+    recommended_flags:
+      attention_backend: "XFORMERS"
+      gpu_memory_utilization: 0.85
+      enforce_eager: true  # Avoid CUDAGraph issues
+    environment:
+      VLLM_ATTENTION_BACKEND: "XFORMERS"

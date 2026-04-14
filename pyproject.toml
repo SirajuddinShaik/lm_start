@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lm-start"
+version = "0.1.0"
+description = "Language Model Project Starter"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "click",
+    "typer",
+    "pyyaml",
+    "psutil",
+    "rich",
+]
+
+[project.scripts]
+lm-start = "lm_start.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["lm_start*", "agents*", "utils*", "core*", "configs*"]
+
+[tool.setuptools.package-data]
+lm_start = ["templates/**/*", "../prompts/**/*"]
+"*" = ["*.yaml", "*.json", "*.md", "*.sh", "*.txt"]

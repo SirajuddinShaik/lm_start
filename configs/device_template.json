@@ -1,0 +1,65 @@
+{
+  "device_name": "dev-machine",
+  "description": "Device-level configuration for this system. Auto-detected from nvidia-smi and CUDA installation.",
+  
+  "cuda": {
+    "version": "12.9",
+    "home": "/usr/local/cuda-12.9",
+    "bin_path": "/usr/local/cuda-12.9/bin",
+    "lib_path": "/usr/local/cuda-12.9/lib64"
+  },
+  
+  "gpus": {
+    "visible_devices": "0",
+    "count": 1,
+    "names": ["NVIDIA H200"],
+    "memory_gb_per_gpu": 140,
+    "total_memory_gb": 140,
+    "notes": "H200 with 141GB HBM3 memory"
+  },
+  
+  "system": {
+    "total_ram_gb": 121,
+    "os": "linux"
+  },
+  
+  "paths": {
+    "hf_home": "/data/.cache/huggingface",
+    "models_base_dir": "/data/models",
+    "logs_dir": "/tmp"
+  },
+  
+  "environment": {
+    "VLLM_WORKER_MULTIPROC_METHOD": "spawn",
+    "VLLM_ATTENTION_BACKEND": "FLASHINFER",
+    "TORCH_CUDA_MATMUL_PRECISION": "high",
+    "PYTHONHASHSEED": "0"
+  },
+  
+  "paths_env": {
+    "PATH": "/usr/local/cuda-12.9/bin:/usr/local/cuda/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+    "LD_LIBRARY_PATH": "/usr/local/cuda-12.9/lib64:/usr/lib/x86_64-linux-gnu",
+    "CUDA_HOME": "/usr/local/cuda-12.9"
+  },
+  
+  "pm2": {
+    "log_date_format": "YYYY-MM-DD HH:mm:ss Z",
+    "max_restarts": 10,
+    "restart_delay": 5000,
+    "kill_timeout": 60000,
+    "listen_timeout": 300000,
+    "min_uptime": "10s"
+  },
+  
+  "vllm_defaults": {
+    "host": "0.0.0.0",
+    "port": 8000,
+    "gpu_memory_utilization": 0.9,
+    "disable_log_requests": true,
+    "enable_prefix_caching": true,
+    "enable_auto_tool_choice": true,
+    "tool_call_parser": "auto"
+  },
+  
+  "_comment": "This is a development machine with 1x NVIDIA GB10 GPU. For production deployments, update GPU count and memory accordingly."
+}

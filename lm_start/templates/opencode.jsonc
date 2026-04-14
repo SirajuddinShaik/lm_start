@@ -1,0 +1,193 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+
+  "plugin": [
+    "oh-my-openagent",
+    "@tarquinen/opencode-dcp@latest",
+    "opencode-antigravity-auth@latest",
+    "opencode-supermemory@latest"
+  ],
+
+  "provider": {
+    "google": {
+      "models": {
+        "antigravity-gemini-3-pro": {
+          "name": "Gemini 3 Pro (Antigravity)",
+          "limit": { "context": 1048576, "output": 65535 },
+          "modalities": {
+            "input": ["text", "image", "pdf"],
+            "output": ["text"]
+          },
+          "variants": {
+            "low": { "thinkingLevel": "low" },
+            "high": { "thinkingLevel": "high" }
+          }
+        },
+
+        "antigravity-gemini-3-flash": {
+          "name": "Gemini 3 Flash (Antigravity)",
+          "limit": { "context": 1048576, "output": 65536 },
+          "modalities": {
+            "input": ["text", "image", "pdf"],
+            "output": ["text"]
+          },
+          "variants": {
+            "minimal": { "thinkingLevel": "minimal" },
+            "low": { "thinkingLevel": "low" },
+            "medium": { "thinkingLevel": "medium" },
+            "high": { "thinkingLevel": "high" }
+          }
+        },
+
+        "antigravity-claude-sonnet-4-5-thinking": {
+          "name": "Claude Sonnet 4.5 Thinking (Antigravity)",
+          "limit": { "context": 200000, "output": 64000 },
+          "modalities": {
+            "input": ["text", "image", "pdf"],
+            "output": ["text"]
+          },
+          "variants": {
+            "low": {
+              "thinkingConfig": { "thinkingBudget": 8192 }
+            },
+            "max": {
+              "thinkingConfig": { "thinkingBudget": 32768 }
+            }
+          }
+        },
+
+        "antigravity-claude-opus-4-5-thinking": {
+          "name": "Claude Opus 4.5 Thinking (Antigravity)",
+          "limit": { "context": 200000, "output": 64000 },
+          "modalities": {
+            "input": ["text", "image", "pdf"],
+            "output": ["text"]
+          },
+          "variants": {
+            "low": {
+              "thinkingConfig": { "thinkingBudget": 8192 }
+            },
+            "max": {
+              "thinkingConfig": { "thinkingBudget": 32768 }
+            }
+          }
+        },
+
+        "gemini-3-flash-preview": {
+          "name": "Gemini 3 Flash Preview (Gemini CLI)",
+          "limit": { "context": 1048576, "output": 65536 },
+          "modalities": {
+            "input": ["text", "image", "pdf"],
+            "output": ["text"]
+          }
+        },
+
+        "gemini-3-pro-preview": {
+          "name": "Gemini 3 Pro Preview (Gemini CLI)",
+          "limit": { "context": 1048576, "output": 65535 },
+          "modalities": {
+            "input": ["text", "image", "pdf"],
+            "output": ["text"]
+          }
+        }
+      }
+    },
+
+    "direct-node5": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Direct Node5",
+      "options": {
+        "baseURL": "http://103.48.42.114:8000/v1",
+        "apiKey": "sk-"
+      },
+      "models": {
+        "kimi-k2-5": {
+          "name": "kimi-k2-5",
+          "limit": {
+            "context": 262000,
+            "output": 131000
+          }
+        }
+      }
+    },
+
+    "gridai": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Grid AI Juspay",
+      "options": {
+        "baseURL": "https://grid.ai.juspay.net/v1",
+        "apiKey": "{env:JUSPAY_API_KEY}"
+      },
+      "models": {
+        "gemini-3-flash-preview": {
+          "name": "gemini-3-pro-preview",
+          "limit": { "context": 1048576, "output": 65536 }
+        },
+        "claude-sonnet-4-5": {
+          "name": "claude-sonnet-4-5",
+          "limit": { "context": 200000, "output": 131000 }
+        },
+        "claude-opus-4-5": {
+          "name": "claude-opus-4-5",
+          "limit": { "context": 200000, "output": 131000 }
+        },
+        "glm-latest": {
+          "name": "glm-latest",
+          "limit": { "context": 200000, "output": 64000 }
+        },
+        "open-large": {
+          "name": "Open Large",
+          "limit": { "context": 200000, "output": 64000 }
+        },
+        "open-fast": {
+          "name": "Open Fast",
+          "limit": { "context": 196000, "output": 131000 }
+        },
+        "kimi-latest": {
+          "name": "kimi-latest",
+          "limit": { "context": 260000, "output": 131000 }
+        }
+      }
+    }
+  },
+
+  "mcp": {
+    "context7": {
+      "type": "remote",
+      "url": "https://mcp.context7.com/mcp",
+      "headers": {
+        "CONTEXT7_API_KEY": "{env:CONTEXT7_API_KEY}"
+      },
+      "enabled": true
+    },
+
+    "deepwiki": {
+      "type": "remote",
+      "url": "https://mcp.deepwiki.com/mcp",
+      "enabled": true
+    },
+
+    "qmd": {
+      "type": "local",
+      "command": ["qmd", "mcp"],
+      "enabled": true
+    }
+  },
+
+  "permission": {
+    "read": "allow",
+    "grep": "allow",
+    "glob": "allow",
+    "list": "allow",
+    "lsp": "allow",
+    "skill": "allow",
+    "todowrite": "allow",
+    "todoread": "allow",
+    "webfetch": "allow",
+    "question": "allow",
+    "git status": "allow",
+    "npm run build": "allow",
+    "ls": "allow",
+    "git log": "allow"
+  }
+}

@@ -1,0 +1,231 @@
+{
+  "_description": "Knowledge base for model configuration options. Updated by agents based on verified experiments.",
+  "_version": "1.0.0",
+  "_last_updated": "",
+  "_model_id": "",
+  
+  "vllm_options": {
+    "attention_backends": {
+      "FLASHINFER": {
+        "description": "FlashInfer attention backend - optimized for decode-heavy workloads",
+        "verified": false,
+        "best_for": ["long_context", "batch_inference"],
+        "env_vars": {"VLLM_ATTENTION_BACKEND": "FLASHINFER"},
+        "performance_notes": ""
+      },
+      "FLASH_ATTN": {
+        "description": "Flash Attention 2 - balanced prefill/decode performance",
+        "verified": false,
+        "best_for": ["general_purpose", "mix of prefill and decode"],
+        "env_vars": {"VLLM_ATTENTION_BACKEND": "FLASH_ATTN"},
+        "extra_install": "flash-attn",
+        "performance_notes": ""
+      },
+      "FLASH_ATTN_VLLM_V1": {
+        "description": "vLLM V1 Flash Attention implementation",
+        "verified": false,
+        "best_for": ["vllm_v1_models"],
+        "env_vars": {"VLLM_ATTENTION_BACKEND": "FLASH_ATTN_VLLM_V1"},
+        "performance_notes": ""
+      },
+      "XFORMERS": {
+        "description": "XFormers attention - flexible but slower fallback",
+        "verified": false,
+        "best_for": ["fallback", "compatibility"],
+        "env_vars": {"VLLM_ATTENTION_BACKEND": "XFORMERS"},
+        "performance_notes": ""
+      },
+      "TORCH_SDPA": {
+        "description": "PyTorch native SDPA attention",
+        "verified": false,
+        "best_for": ["last_resort", "debugging"],
+        "env_vars": {"VLLM_ATTENTION_BACKEND": "TORCH_SDPA"},
+        "performance_notes": ""
+      }
+    },
+    
+    "command_flags": {
+      "--tensor-parallel-size": {
+        "type": "int",
+        "default": 1,
+        "description": "Number of GPUs for tensor parallelism",
+        "verified_values": [],
+        "constraints": {"min": 1, "max": 8}
+      },
+      "--pipeline-parallel-size": {
+        "type": "int", 
+        "default": 1,
+        "description": "Number of pipeline stages",
+        "verified_values": [],
+        "constraints": {"min": 1}
+      },
+      "--dtype": {
+        "type": "choice",
+        "choices": ["auto", "half", "bfloat16", "float", "fp8"],
+        "default": "auto",
+        "description": "Data type for model weights and activations",
+        "verified_values": [],
+        "recommendations": {
+          "ampere_and_newer": "bfloat16",
+          "older_gpus": "float16"
+        }
+      },
+      "--gpu-memory-utilization": {
+        "type": "float",
+        "default": 0.9,
+        "range": [0.0, 1.0],
+        "description": "Fraction of GPU memory to use for model",
+        "verified_values": [],
+        "tuning_notes": "Lower for KV cache, higher for model weights"
+      },
+      "--max-model-len": {
+        "type": "int",
+        "description": "Maximum sequence length",
+        "verified_values": [],
+        "context_targets": [8192, 16384, 32768, 65536, 131072]
+      },
+      "--max-num-seqs": {
+        "type": "int",
+        "default": 256,
+        "description": "Maximum number of sequences per iteration",
+        "verified_values": [],
+        "tuning_notes": "Increase for higher throughput, decrease for lower latency"
+      },
+      "--max-num-batched-tokens": {
+        "type": "int",
+        "description": "Maximum number of tokens to batch",
+        "verified_values": [],
+        "tuning_notes": "Larger for prefill-heavy workloads"
+      },
+      "--quantization": {
+        "type": "choice",
+        "choices": [null, "awq", "gptq", "squeezellm", "fp8"],
+        "description": "Quantization method",
+        "verified_values": [],
+        "requires": {
+          "awq": "autoawq package",
+          "gptq": "optimum package",
+          "fp8": "Hopper GPU or newer"
+        }
+      },
+      "--kv-cache-dtype": {
+        "type": "choice",
+        "choices": ["auto", "fp8", "fp8_e5m2", "fp8_e4m3"],
+        "description": "Data type for KV cache",
+        "verified_values": [],
+        "notes": "fp8 can reduce memory usage"
+      },
+      "--enable-prefix-caching": {
+        "type": "flag",
+        "description": "Enable automatic prefix caching",
+        "verified": false,
+        "use_case": "Repeated prompts with common prefixes"
+      },
+      "--enable-chunked-prefill": {
+        "type": "flag",
+        "description": "Enable chunked prefill for long sequences",
+        "verified": false,
+        "use_case": "Very long input sequences"
+      },
+      "--num-scheduler-steps": {
+        "type": "int",
+        "default": 1,
+        "description": "Maximum number of forward steps per schedule iteration",
+        "verified_values": [],
+        "experimental": true
+      },
+      "--worker-use-ray": {
+        "type": "flag",
+        "description": "Use Ray for distributed serving",
+        "verified": false
+      },
+      "--load-format": {
+        "type": "choice",
+        "choices": ["auto", "pt", "safetensors", "npcache", "dummy"],
+        "default": "auto",
+        "description": "Format to load model weights"
+      },
+      "--ignore-patterns": {
+        "type": "list",
+        "description": "Patterns to ignore when loading weights"
+      }
+    },
+    
+    "environment_variables": {
+      "VLLM_ATTENTION_BACKEND": {
+        "values": ["FLASHINFER", "FLASH_ATTN", "FLASH_ATTN_VLLM_V1", "XFORMERS", "TORCH_SDPA"],
+        "description": "Attention backend selection"
+      },
+      "VLLM_WORKER_MULTIPROC_METHOD": {
+        "values": ["fork", "spawn", "forkserver"],
+        "default": "fork",
+        "description": "Multiprocessing method for workers",
+        "notes": "spawn is safer but slower"
+      },
+      "VLLM_CPU_KVCACHE_SPACE": {
+        "type": "int",
+        "description": "CPU memory space for KV cache in GB",
+        "use_case": "Offloading KV cache to CPU"
+      },
+      "VLLM_USE_MODELSCOPE": {
+        "type": "bool",
+        "description": "Use ModelScope instead of HuggingFace"
+      },
+      "VLLM_ALLOW_LONG_MAX_MODEL_LEN": {
+        "type": "bool",
+        "description": "Allow max_model_len > 32k without warning"
+      },
+      "CUDA_VISIBLE_DEVICES": {
+        "type": "string",
+        "description": "GPU devices to use"
+      },
+      "CUDA_HOME": {
+        "type": "path",
+        "description": "CUDA installation path"
+      }
+    }
+  },
+  
+  "verified_combinations": [
+    {
+      "context_length": 0,
+      "attention_backend": "",
+      "tensor_parallel": 1,
+      "gpu_memory_utilization": 0.9,
+      "dtype": "auto",
+      "throughput_tokens_per_sec": 0,
+      "latency_p50_ms": 0,
+      "memory_used_gb": 0,
+      "verified": false,
+      "run_id": "",
+      "notes": ""
+    }
+  ],
+  
+  "best_known_config": {
+    "context_length": 0,
+    "attention_backend": "",
+    "flags": {},
+    "env_vars": {},
+    "performance": {},
+    "verified": false
+  },
+  
+  "failed_combinations": [
+    {
+      "context_length": 0,
+      "attention_backend": "",
+      "error_type": "",
+      "error_message": "",
+      "flags": {},
+      "run_id": "",
+      "timestamp": ""
+    }
+  ],
+  
+  "agent_notes": {
+    "experiment_agent": "",
+    "phase_agent": "",
+    "optimization_hints": []
+  }
+}

@@ -1,0 +1,162 @@
+{
+  "version": "1.0",
+  "description": "Model family specific vLLM configuration defaults",
+  
+  "families": {
+    "llama": {
+      "description": "Llama family: Llama 2, Llama 3, Llama 3.1, CodeLlama",
+      "trust_remote_code": false,
+      "attention_backend": "FLASHINFER",
+      "enable_prefix_caching": true,
+      "tensor_parallel_strategy": "auto",
+      "chat_template": "auto",
+      "special_args": []
+    },
+    
+    "mistral": {
+      "description": "Mistral 7B family",
+      "trust_remote_code": false,
+      "attention_backend": "FLASHINFER",
+      "enable_prefix_caching": true,
+      "special_args": []
+    },
+    
+    "mixtral": {
+      "description": "Mixtral 8x7B, 8x22B (MoE)",
+      "trust_remote_code": false,
+      "is_moe": true,
+      "attention_backend": "FLASHINFER",
+      "enable_expert_parallel": true,
+      "enable_prefix_caching": true,
+      "special_args": ["--enable-expert-parallel"]
+    },
+    
+    "qwen": {
+      "description": "Qwen 2, Qwen 2.5 family",
+      "trust_remote_code": false,
+      "attention_backend": "FLASHINFER",
+      "enable_prefix_caching": true,
+      "chat_template": "auto",
+      "special_args": []
+    },
+    
+    "qwen-moe": {
+      "description": "Qwen2-MoE family",
+      "trust_remote_code": false,
+      "is_moe": true,
+      "attention_backend": "FLASHINFER",
+      "enable_expert_parallel": true,
+      "enable_prefix_caching": true,
+      "special_args": ["--enable-expert-parallel"]
+    },
+    
+    "qwen-vl": {
+      "description": "Qwen2-VL multimodal family",
+      "trust_remote_code": true,
+      "is_multimodal": true,
+      "attention_backend": "FLASHINFER",
+      "enable_prefix_caching": true,
+      "special_args": [
+        "--limit-mm-per-prompt", "image=5"
+      ]
+    },
+    
+    "deepseek": {
+      "description": "DeepSeek V2, V3, R1 family (MoE)",
+      "trust_remote_code": true,
+      "is_moe": true,
+      "attention_backend": "FLASHINFER",
+      "enable_expert_parallel": true,
+      "enable_prefix_caching": true,
+      "special_args": [
+        "--enable-expert-parallel",
+        "--trust-remote-code"
+      ]
+    },
+    
+    "deepseek-reasoning": {
+      "description": "DeepSeek R1, Prover (reasoning models)",
+      "trust_remote_code": true,
+      "is_moe": true,
+      "is_reasoning": true,
+      "attention_backend": "FLASHINFER",
+      "enable_expert_parallel": true,
+      "enable_prefix_caching": true,
+      "reasoning_parser": "deepseek",
+      "special_args": [
+        "--enable-expert-parallel",
+        "--trust-remote-code",
+        "--reasoning-parser", "deepseek"
+      ]
+    },
+    
+    "kimi": {
+      "description": "Moonshot Kimi family",
+      "trust_remote_code": true,
+      "attention_backend": "FLASHINFER",
+      "enable_prefix_caching": true,
+      "tool_call_parser": "kimi_k2",
+      "reasoning_parser": "kimi_k2",
+      "special_args": [
+        "--trust-remote-code",
+        "--tool-call-parser", "kimi_k2",
+        "--reasoning-parser", "kimi_k2"
+      ]
+    },
+    
+    "phi": {
+      "description": "Phi-3 family",
+      "trust_remote_code": true,
+      "attention_backend": "FLASHINFER",
+      "enable_prefix_caching": true,
+      "special_args": ["--trust-remote-code"]
+    },
+    
+    "phi-vl": {
+      "description": "Phi-3 Vision multimodal",
+      "trust_remote_code": true,
+      "is_multimodal": true,
+      "attention_backend": "FLASHINFER",
+      "special_args": [
+        "--trust-remote-code",
+        "--limit-mm-per-prompt", "image=5"
+      ]
+    },
+    
+    "gemma": {
+      "description": "Gemma family",
+      "trust_remote_code": false,
+      "attention_backend": "FLASHINFER",
+      "enable_prefix_caching": true,
+      "special_args": []
+    },
+    
+    "gemma2": {
+      "description": "Gemma 2 family",
+      "trust_remote_code": false,
+      "attention_backend": "FLASHINFER",
+      "enable_prefix_caching": true,
+      "special_args": []
+    }
+  },
+  
+  "size_based_rules": {
+    "tensor_parallel": [
+      {"min_params": 100, "tp": 8, "description": "100B+ models"},
+      {"min_params": 70, "tp": 4, "description": "70-100B models"},
+      {"min_params": 30, "tp": 2, "description": "30-70B models"},
+      {"min_params": 0, "tp": 1, "description": "Under 30B models"}
+    ],
+    "max_model_len": [
+      {"context": 128000, "default_len": 32768, "description": "128K context models"},
+      {"context": 32000, "default_len": 16384, "description": "32K context models"},
+      {"context": 0, "default_len": 4096, "description": "Default"}
+    ]
+  },
+  
+  "vram_estimates": {
+    "bytes_per_param_fp16": 2,
+    "kv_cache_overhead_factor": 1.3,
+    "min_free_vram_gb": 5
+  }
+}

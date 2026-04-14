@@ -1,0 +1,482 @@
+# Model Family Flag Rules
+# Defines required and recommended flags for different model architectures
+# Version: 1.0.0
+
+metadata:
+  version: "1.0.0"
+  last_updated: "2025-04-02"
+  description: "Model-specific flag configurations and parser mappings"
+
+# ============================================================================
+# Model Family Definitions
+# ============================================================================
+model_families:
+  # DeepSeek V3 (MoE)
+  deepseek-v3:
+    patterns:
+      - "deepseek.*v3"
+      - "deepseek.*moe"
+    required_flags:
+      - "--enable-expert-parallel"
+      - "--trust-remote-code"
+    recommended_flags:
+      - "--all2all-backend deepep_low_latency"
+      - "--enable-chunked-prefill"
+      - "--max-model-len 65536"
+    tool_parser: null
+    reasoning_parser: null
+    chat_template_kwargs: {}
+    notes: "671B parameter MoE model, requires expert parallelism"
+    
+  # DeepSeek R1 (Reasoning)
+  deepseek-r1:
+    patterns:
+      - "deepseek.*r1"
+      - "deepseek.*reasoner"
+    required_flags:
+      - "--trust-remote-code"
+    recommended_flags:
+      - "--reasoning-parser deepseek_r1"
+      - "--max-model-len 65536"
+      - "--enable-chunked-prefill"
+    tool_parser: null
+    reasoning_parser: "deepseek_r1"
+    chat_template_kwargs:
+      thinking: true
+    notes: "Reasoning model with thinking tokens, use deepseek_r1 parser"
+    
+  # QwQ (Reasoning)
+  qwq:
+    patterns:
+      - "qwq"
+      - "qwen.*reasoning"
+    required_flags: []
+    recommended_flags:
+      - "--reasoning-parser qwq"
+      - "--max-model-len 32768"
+      - "--enable-chunked-prefill"
+    tool_parser: null
+    reasoning_parser: "qwq"
+    chat_template_kwargs:
+      thinking: true
+    notes: "Qwen reasoning model with thinking tokens"
+    
+  # Kimi K2.5
+  kimi-k2.5:
+    patterns:
+      - "kimi.*k2"
+      - "kimi.*2.5"
+    required_flags:
+      - "--trust-remote-code"
+    recommended_flags:
+      - "--reasoning-parser kimi_k2"
+      - "--tool-call-parser kimi_k2"
+      - "--max-model-len 256000"
+      - "--enable-chunked-prefill"
+    tool_parser: "kimi_k2"
+    reasoning_parser: "kimi_k2"
+    chat_template_kwargs:
+      thinking: true
+    notes: "Supports both reasoning and tool calling, very long context (256K)"
+    
+  # Llama 3.1
+  llama3.1:
+    patterns:
+      - "llama.*3.1"
+      - "meta-llama.*3.1"
+    required_flags: []
+    recommended_flags:
+      - "--tool-call-parser llama3_json"
+      - "--enable-auto-tool-choice"
+      - "--max-model-len 131072"
+    tool_parser: "llama3_json"
+    reasoning_parser: null
+    chat_template_kwargs: {}
+    notes: "Native tool calling support with JSON parser"
+    
+  # Llama 3.2
+  llama3.2:
+    patterns:
+      - "llama.*3.2"
+      - "meta-llama.*3.2"
+    required_flags: []
+    recommended_flags:
+      - "--tool-call-parser pythonic"
+      - "--enable-auto-tool-choice"
+      - "--max-model-len 131072"
+    tool_parser: "pythonic"
+    reasoning_parser: null
+    chat_template_kwargs: {}
+    notes: "Uses Pythonic tool format, includes vision variants"
+    
+  # Llama 3.3
+  llama3.3:
+    patterns:
+      - "llama.*3.3"
+      - "meta-llama.*3.3"
+    required_flags: []
+    recommended_flags:
+      - "--tool-call-parser llama3_json"
+      - "--enable-auto-tool-choice"
+      - "--max-model-len 131072"
+    tool_parser: "llama3_json"
+    reasoning_parser: null
+    chat_template_kwargs: {}
+    notes: "Continuation of Llama 3.1 capabilities"
+    
+  # Qwen 2.5
+  qwen2.5:
+    patterns:
+      - "qwen.*2.5"
+      - "qwen2.5"
+    required_flags: []
+    recommended_flags:
+      - "--tool-call-parser hermes"
+      - "--max-model-len 32768"
+    tool_parser: "hermes"
+    reasoning_parser: null
+    chat_template_kwargs: {}
+    notes: "Hermes tool format, good general-purpose model"
+    
+  # Qwen 2.5 Coder
+  qwen2.5-coder:
+    patterns:
+      - "qwen.*coder.*2.5"
+      - "qwen2.5.*coder"
+    required_flags: []
+    recommended_flags:
+      - "--tool-call-parser hermes"
+      - "--max-model-len 131072"
+    tool_parser: "hermes"
+    reasoning_parser: null
+    chat_template_kwargs: {}
+    notes: "Code-specialized Qwen variant"
+    
+  # Qwen MoE
+  qwen-moe:
+    patterns:
+      - "qwen.*moe"
+    required_flags:
+      - "--enable-expert-parallel"
+    recommended_flags:
+      - "--tool-call-parser hermes"
+      - "--max-model-len 32768"
+    tool_parser: "hermes"
+    reasoning_parser: null
+    chat_template_kwargs: {}
+    notes: "Qwen Mixture of Experts, requires expert parallelism"
+    
+  # Mistral
+  mistral:
+    patterns:
+      - "mistral"
+    required_flags: []
+    recommended_flags:
+      - "--tool-call-parser mistral"
+      - "--max-model-len 32768"
+    tool_parser: "mistral"
+    reasoning_parser: null
+    chat_template_kwargs: {}
+    notes: "Native Mistral tool format"
+    
+  # Mixtral (MoE)
+  mixtral:
+    patterns:
+      - "mixtral"
+    required_flags:
+      - "--enable-expert-parallel"
+    recommended_flags:
+      - "--tool-call-parser mistral"
+      - "--max-model-len 32768"
+    tool_parser: "mistral"
+    reasoning_parser: null
+    chat_template_kwargs: {}
+    notes: "Mixtral MoE, requires expert parallelism"
+    
+  # Gemma
+  gemma:
+    patterns:
+      - "gemma"
+    required_flags: []
+    recommended_flags:
+      - "--max-model-len 8192"
+    tool_parser: null
+    reasoning_parser: null
+    chat_template_kwargs: {}
+    notes: "Google Gemma models"
+    
+  # Gemma 2
+  gemma2:
+    patterns:
+      - "gemma.*2"
+    required_flags: []
+    recommended_flags:
+      - "--max-model-len 8192"
+    tool_parser: null
+    reasoning_parser: null
+    chat_template_kwargs: {}
+    notes: "Gemma 2nd generation"
+    
+  # Phi
+  phi:
+    patterns:
+      - "phi"
+    required_flags: []
+    recommended_flags:
+      - "--trust-remote-code"
+      - "--max-model-len 4096"
+    tool_parser: null
+    reasoning_parser: null
+    chat_template_kwargs: {}
+    notes: "Microsoft Phi models"
+    
+  # Phi 4
+  phi4:
+    patterns:
+      - "phi.*4"
+    required_flags: []
+    recommended_flags:
+      - "--max-model-len 16384"
+    tool_parser: null
+    reasoning_parser: null
+    chat_template_kwargs: {}
+    notes: "Microsoft Phi-4"
+    
+  # Command R
+  command-r:
+    patterns:
+      - "command-r"
+      - "c4ai-command"
+    required_flags: []
+    recommended_flags:
+      - "--max-model-len 131072"
+      - "--enable-chunked-prefill"
+    tool_parser: null
+    reasoning_parser: null
+    chat_template_kwargs: {}
+    notes: "Cohere Command R with long context"
+    
+  # DBRX
+  dbrx:
+    patterns:
+      - "dbrx"
+    required_flags:
+      - "--enable-expert-parallel"
+      - "--trust-remote-code"
+    recommended_flags:
+      - "--max-model-len 32768"
+    tool_parser: null
+    reasoning_parser: null
+    chat_template_kwargs: {}
+    notes: "Databricks DBRX MoE"
+    
+  # Falcon
+  falcon:
+    patterns:
+      - "falcon"
+    required_flags: []
+    recommended_flags:
+      - "--trust-remote-code"
+      - "--max-model-len 2048"
+    tool_parser: null
+    reasoning_parser: null
+    chat_template_kwargs: {}
+    notes: "TII Falcon models"
+    
+  # GPT-2/Neo/GPT-J family
+  gpt2-family:
+    patterns:
+      - "gpt2"
+      - "gpt-neo"
+      - "gpt-j"
+    required_flags: []
+    recommended_flags:
+      - "--max-model-len 2048"
+    tool_parser: null
+    reasoning_parser: null
+    chat_template_kwargs: {}
+    notes: "Legacy GPT-style models"
+    
+  # Default fallback
+  default:
+    patterns:
+      - ".*"
+    required_flags: []
+    recommended_flags:
+      - "--max-model-len 4096"
+    tool_parser: null
+    reasoning_parser: null
+    chat_template_kwargs: {}
+    notes: "Default settings for unknown models"
+
+# ============================================================================
+# Parser Definitions
+# ============================================================================
+parsers:
+  deepseek_r1:
+    name: "deepseek_r1"
+    description: "Parser for DeepSeek-R1 reasoning outputs"
+    thinking_tags: ["<think>", "</think>"]
+    reasoning_content_field: "reasoning_content"
+    supports_streaming: true
+    
+  kimi_k2:
+    name: "kimi_k2"
+    description: "Parser for Kimi-K2.5 reasoning and tool calls"
+    thinking_tags: ["<thinking>", "</thinking>"]
+    reasoning_content_field: "reasoning_content"
+    tool_format: "kimi"
+    supports_streaming: true
+    
+  qwq:
+    name: "qwq"
+    description: "Parser for QwQ reasoning outputs"
+    thinking_tags: ["<think>", "</think>"]
+    reasoning_content_field: "reasoning_content"
+    supports_streaming: true
+    
+  llama3_json:
+    name: "llama3_json"
+    description: "JSON tool call format for Llama 3.1+"
+    format: "json"
+    tool_call_field: "tool_calls"
+    supports_streaming: true
+    
+  hermes:
+    name: "hermes"
+    description: "Hermes tool call format (Qwen, etc.)"
+    format: "xml"
+    tool_call_field: "tool_calls"
+    supports_streaming: true
+    
+  mistral:
+    name: "mistral"
+    description: "Native Mistral tool call format"
+    format: "json"
+    tool_call_field: "tool_calls"
+    supports_streaming: true
+    
+  pythonic:
+    name: "pythonic"
+    description: "OpenAI-compatible Pythonic tool format"
+    format: "pythonic"
+    tool_call_field: "tool_calls"
+    supports_streaming: true
+
+# ============================================================================
+# Capability Detection Rules
+# ============================================================================
+capability_detection:
+  reasoning_models:
+    patterns:
+      - "deepseek.*r1"
+      - "qwq"
+      - "kimi.*k2"
+      - "reasoning"
+      - "think"
+      - "o1"
+      - "o3"
+    indicators:
+      - config_key: "is_reasoning_model"
+      - supports_thinking: true
+      
+  tool_support:
+    patterns:
+      - "llama.*3.[12]"
+      - "qwen.*2.5"
+      - "mistral"
+      - "mixtral"
+      - "command-r"
+      - "kimi.*k2"
+    indicators:
+      - chat_template_contains: "tool"
+      - supports_function_calling: true
+      
+  multimodal:
+    patterns:
+      - "llama.*vision"
+      - "qwen.*vl"
+      - "gpt-4.*vision"
+      - "claude.*vision"
+      - "pixtral"
+      - "llava"
+    indicators:
+      - config_key: "is_multimodal"
+      - has_vision_tower: true
+      
+  long_context:
+    patterns:
+      - "llama.*3.[123]"
+      - "kimi.*k2"
+      - "command-r"
+      - "qwen.*coder.*2.5"
+      - "deepseek.*r1"
+      - "deepseek.*v3"
+    default_contexts:
+      llama3.1: 131072
+      llama3.2: 131072
+      llama3.3: 131072
+      kimi-k2.5: 256000
+      deepseek-r1: 65536
+      deepseek-v3: 65536
+      command-r: 131072
+
+# ============================================================================
+# Environment Variable Rules
+# ============================================================================
+environment_rules:
+  always_set:
+    VLLM_ATTENTION_BACKEND: "FLASHINFER"
+    VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
+    
+  for_long_context:
+    VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
+    
+  for_quantized:
+    TORCH_CUDA_MATMUL_PRECISION: "high"
+    
+  for_moe:
+    NCCL_DEBUG: "WARN"
+    
+  for_debugging:
+    VLLM_LOGGING_LEVEL: "DEBUG"
+    VLLM_TRACE_FUNCTION: "1"
+    
+  for_compatibility:
+    VLLM_WORKER_MULTIPROC_METHOD: "spawn"
+
+# ============================================================================
+# Tensor Parallel Calculation Rules
+# ============================================================================
+tensor_parallel_rules:
+  by_model_size:
+    - size_range: [0, 7]
+      recommended_tp: 1
+      min_gpu_memory_gb: 16
+      
+    - size_range: [8, 13]
+      recommended_tp: 1
+      min_gpu_memory_gb: 24
+      
+    - size_range: [14, 30]
+      recommended_tp: 2
+      min_gpu_memory_gb: 40
+      
+    - size_range: [31, 70]
+      recommended_tp: 4
+      min_gpu_memory_gb: 80
+      
+    - size_range: [71, 500]
+      recommended_tp: 8
+      min_gpu_memory_gb: 80
+      
+  moe_overhead_multiplier: 1.3
+  
+  quantization_factors:
+    fp16: 1.0
+    bf16: 1.0
+    fp8: 0.5
+    int8: 0.5
+    int4: 0.25
+    awq: 0.25
+    gptq: 0.25
