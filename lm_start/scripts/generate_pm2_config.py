@@ -22,7 +22,7 @@ from typing import Optional, Dict, Any, List
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from utils.model_utils import (
+from lm_start.utils.model_utils import (
     get_hf_home,
     get_model_cache_path,
     read_model_config,
@@ -33,7 +33,7 @@ from utils.model_utils import (
     detect_model_capabilities,
     copy_all_model_files,
 )
-from vllm_flag_validator import validate_vllm_flags
+from lm_start.vllm_flag_validator import validate_vllm_flags
 
 
 SCRIPT_DIR = Path(__file__).parent
@@ -459,6 +459,177 @@ def main():
         if not any(copied.values()):
             print("  No files found to copy")
 
+
+def generate_pm2_config_func(model_dir: str) -> Dict[str, Any]:
+    """Generate PM2 ecosystem config for model directory.
+
+    Returns:
+        Dict with 'success', 'config_path', and 'error' keys
+    """
+    result = {
+        "success": False,
+        "config_path": None,
+        "error": None,
+    }
+
+    model_dir_path = Path(model_dir)
+
+    # Load model info
+    model_info_path = (
+        model_dir_path / ".llm-context" / "model-context" / "model_info.json"
+    )
+    if not model_info_path.exists():
+        result["error"] = f"model_info.json not found at {model_info_path}"
+        return result
+
+    model_info = load_json(str(model_info_path))
+
+    # Load device config (fallback to defaults)
+    device_config_path = (
+        model_dir_path / ".llm-context" / "model-context" / "device_config.json"
+    )
+    if device_config_path.exists():
+        device_config = load_json(str(device_config_path))
+    else:
+        device_config = {
+            "gpus": {"count": 8, "memory_gb_per_gpu": 80},
+            "paths": {},
+            "environment": {},
+            "pm2": {},
+            "vllm_defaults": {"host": "0.0.0.0", "port": 8000},
+        }
+
+    # Read model config from HF cache
+    model_config = read_model_config(model_info.get("model_id", "unknown/model"))
+
+    # Generate config
+    output_path = model_dir_path / "ecosystem.config.js"
+
+    config = generate_ecosystem_config(
+        model_dir=model_dir_path,
+        model_info=model_info,
+        device_config=device_config,
+        model_config=model_config,
+        output_file=output_path,
+    )
+
+    result["success"] = True
+    result["config_path"] = str(output_path)
+    return result
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Generate optimal PM2 ecosystem.config.js for vLLM serving"
+    )
+    parser.add_argument("model_dir", help="Model directory containing .llm-context/")
+    parser.add_argument(
+        "-o",
+        "--output",
+        default="ecosystem.config.js",
+        help="Output file path (default: ecosystem.config.js in model_dir)",
+    )
+    parser.add_argument(
+        "--port", type=int, default=8000, help="Server port (default: 8000)"
+    )
+    parser.add_argument(
+        "--host", default="0.0.0.0", help="Server host (default: 0.0.0.0)"
+    )
+    parser.add_argument(
+        "--model-info",
+        help="Path to model_info.json (default: .llm-context/model-context/model_info.json)",
+    )
+    parser.add_argument(
+        "--device-config",
+        help="Path to device config (default: .llm-context/model-context/device_config.json)",
+    )
+    parser.add_argument(
+        "--copy-docs",
+        action="store_true",
+        help="Copy documentation files from checkpoint",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Print config without writing"
+    )
+
+    args = parser.parse_args()
+
+    model_dir = Path(args.model_dir)
+
+    # Load model info
+    model_info_path = (
+        Path(args.model_info)
+        if args.model_info
+        else model_dir / ".llm-context" / "model-context" / "model_info.json"
+    )
+    if not model_info_path.exists():
+        print(f"ERROR: model_info.json not found at {model_info_path}")
+        return 1
+
+    model_info = load_json(str(model_info_path))
+    model_id = model_info.get("model_id", "unknown/model")
+
+    print(f"Model: {model_id}")
+
+    # Load device config
+    if args.device_config:
+        device_config_path = Path(args.device_config)
+    else:
+        device_config_path = (
+            model_dir / ".llm-context" / "model-context" / "device_config.json"
+        )
+
+    if device_config_path.exists():
+        device_config = load_json(str(device_config_path))
+    else:
+        # Fallback to system config
+        system_config_path = Path(__file__).parent / "config" / "system.yaml"
+        if system_config_path.exists():
+            import yaml
+
+            with open(system_config_path) as f:
+                config = yaml.safe_load(f)
+            device_config = {
+                "gpus": config.get("device", {}).get("gpu", {}),
+                "paths": config.get("paths", {}),
+                "environment": config.get("environment", {}),
+                "pm2": config.get("pm2", {}),
+                "vllm_defaults": config.get("vllm_defaults", {}),
+            }
+        else:
+            device_config = {
+                "gpus": {"count": 8, "memory_gb_per_gpu": 80},
+                "paths": {},
+                "environment": {},
+                "pm2": {},
+                "vllm_defaults": {"host": "0.0.0.0", "port": 8000},
+            }
+
+    # Read model config from HF cache
+    model_config = read_model_config(model_id)
+    if model_config:
+        print(f"  Loaded model config from checkpoint")
+        max_pos = get_max_position_embeddings(model_id)
+        if max_pos:
+            print(f"  max_position_embeddings: {max_pos}")
+    else:
+        print(f"  Warning: Could not load model config from checkpoint")
+
+    # Copy documentation files if requested
+    if args.copy_docs:
+        print("\nCopying files from model checkpoint...")
+        copied = copy_all_model_files(model_id, model_dir)
+
+        if copied["docs"]:
+            print(f"  Documentation: {', '.join(copied['docs'])}")
+        if copied["templates"]:
+            print(f"  Templates: {', '.join(copied['templates'])}")
+        if copied["configs"]:
+            print(f"  Configs: {', '.join(copied['configs'])}")
+
+        if not any(copied.values()):
+            print("  No files found to copy")
+
     # Generate config
     output_path = (
         model_dir / "ecosystem.config.js"
@@ -479,6 +650,8 @@ def main():
         print("\n" + "=" * 60)
         print(config)
 
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

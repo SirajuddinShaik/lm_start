@@ -22,22 +22,15 @@ Output:
 
 import argparse
 import json
+import logging
 import os
 import sys
 from pathlib import Path
 from typing import Dict, Any, Optional
 
-sys.path.insert(0, str(Path(__file__).parent))
-from utils.model_utils import get_hf_home
+import os
 
-
-def log(message: str, level: str = "info"):
-    """Print log message."""
-    prefix = "[extract_vllm_config]"
-    if level == "error":
-        print(f"{prefix} ERROR: {message}", file=sys.stderr)
-    else:
-        print(f"{prefix} {message}")
+logger = logging.getLogger(__name__)
 
 
 def get_model_path_from_dir(model_dir: Path) -> Optional[str]:
@@ -52,7 +45,7 @@ def get_model_path_from_dir(model_dir: Path) -> Optional[str]:
             if model_id:
                 # Find in HF cache
                 cache_id = model_id.replace("/", "--")
-                hf_home = get_hf_home()
+                hf_home = os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface"))
 
                 # Check hub cache
                 hub_path = Path(hf_home) / "hub" / f"models--{cache_id}" / "snapshots"
@@ -66,7 +59,7 @@ def get_model_path_from_dir(model_dir: Path) -> Optional[str]:
                 if direct_path.exists():
                     return str(direct_path)
         except Exception as e:
-            log(f"Error reading model_info.json: {e}", "error")
+            logger.error(f"Error reading model_info.json: {e}")
 
     # Try to find any model files in common locations
     possible_paths = [
@@ -131,7 +124,7 @@ def introspect_model_with_vllm(
         from vllm.model_executor.models import ModelRegistry
         from vllm.transformers_utils.config import get_config as get_hf_config
 
-        log(f"Introspecting model: {model_path}")
+        logger.info(f"Introspecting model: {model_path}")
 
         # Get HF config first
         hf_config = get_hf_config(model_path, trust_remote_code=trust_remote_code)
@@ -213,7 +206,7 @@ def introspect_model_with_vllm(
             extracted["success"] = True
 
         except Exception as e:
-            log(f"vLLM config creation failed: {e}", "error")
+            logger.error(f"vLLM config creation failed: {e}")
             extracted["error"] = str(e)
             extracted["vllm_config"] = None
 
@@ -391,7 +384,7 @@ def introspect_model_with_vllm(
             }
 
         except Exception as e:
-            log(f"Memory estimation failed: {e}", "error")
+            logger.error(f"Memory estimation failed: {e}")
             extracted["memory_estimate"] = None
 
         # Get vLLM version
@@ -403,10 +396,10 @@ def introspect_model_with_vllm(
             extracted["vllm_version"] = "unknown"
 
     except ImportError as e:
-        log(f"vLLM not available in venv: {e}", "error")
+        logger.error(f"vLLM not available in venv: {e}")
         extracted["error"] = f"vLLM import failed: {e}"
     except Exception as e:
-        log(f"Unexpected error: {e}", "error")
+        logger.error(f"Unexpected error: {e}")
         extracted["error"] = str(e)
 
     return extracted
@@ -437,7 +430,7 @@ def test_model_load(
     try:
         from vllm import LLM
 
-        log(f"Testing model load with TP={tensor_parallel_size}...")
+        logger.info(f"Testing model load with TP={tensor_parallel_size}...")
 
         llm = LLM(
             model=model_path,
@@ -466,7 +459,7 @@ def test_model_load(
 
         # Parse OOM error for memory requirements
         if "CUDA out of memory" in error_str or "OutOfMemoryError" in error_str:
-            log(f"OOM with TP={tensor_parallel_size}, need more GPUs")
+            logger.info(f"OOM with TP={tensor_parallel_size}, need more GPUs")
 
             # Try to extract memory requirement from error
             import re
@@ -483,11 +476,102 @@ def test_model_load(
                 )  # Round up
                 result["required_tp"] = min(required_tp, 8)  # Max 8 GPUs
 
-                log(
+                logger.info(
                     f"Estimated memory: {required_gb:.1f}GB, recommended TP: {result['required_tp']}"
                 )
 
         result["success"] = False
+
+    return result
+
+
+def extract_vllm_config_func(
+    model_dir: str,
+    max_model_len: int = 1024,
+    test_load: bool = False,
+    tensor_parallel_size: int = 1,
+) -> Dict[str, Any]:
+    """Extract vLLM configuration from model.
+
+    Returns:
+        Dict with 'success', 'config', and 'error' keys
+    """
+    result = {
+        "success": False,
+        "config": None,
+        "error": None,
+    }
+
+    model_dir_path = Path(model_dir)
+    if not model_dir_path.exists():
+        result["error"] = f"Model directory not found: {model_dir}"
+        return result
+
+    # Get model path
+    model_path = get_model_path_from_dir(model_dir_path)
+    if not model_path:
+        result["error"] = "Could not find model checkpoint"
+        return result
+
+    logger.info(f"Found model at: {model_path}")
+
+    # Introspect model
+    extracted = introspect_model_with_vllm(
+        model_path=model_path,
+        max_model_len=max_model_len,
+    )
+
+    # Optionally test loading
+    if test_load:
+        logger.info("Testing model load...")
+        load_test = test_model_load(
+            model_path=model_path,
+            tensor_parallel_size=tensor_parallel_size,
+            max_model_len=max_model_len,
+        )
+        extracted["load_test"] = load_test
+
+        # If OOM with TP=1, recommend higher TP
+        if not load_test["success"] and load_test.get("required_tp", 1) > 1:
+            extracted["recommended_tp"] = load_test["required_tp"]
+
+    # Let agent decide TP based on actual testing
+    extracted["recommended_tp"] = None
+
+    output_path = (
+        model_dir_path / ".llm-context" / "model-context" / "vllm_extracted_config.json"
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w") as f:
+        json.dump(extracted, f, indent=2)
+
+    logger.info(f"Extracted config saved to: {output_path}")
+
+    # Print summary
+    if extracted["success"]:
+        logger.info("Extraction successful!")
+        logger.info(f"  Architecture: {extracted.get('architecture', 'unknown')}")
+        logger.info(f"  Supported: {extracted.get('is_supported', False)}")
+        logger.info(f"  Is MoE: {extracted.get('is_moe', False)}")
+        if extracted.get("memory_estimate"):
+            mem_est = extracted["memory_estimate"]
+            logger.info(
+                f"  Est. Runtime Memory: ~{mem_est['memory_gb']:.1f}GB (approximate, may vary)"
+            )
+            logger.info(
+                f"  Actual Model Size: {mem_est.get('actual_size_gb', 0):.1f}GB on disk"
+            )
+            logger.info(
+                f"  Parameters: {mem_est['parameters_b']:.1f}B (estimated from config)"
+            )
+        logger.info(f"  Recommended TP: Let agent experiment (None)")
+    else:
+        logger.error(f"Extraction failed: {extracted.get('error')}")
+
+    result["success"] = extracted["success"]
+    result["config"] = extracted
+    if not extracted["success"]:
+        result["error"] = extracted.get("error", "Unknown error")
 
     return result
 
@@ -506,74 +590,45 @@ def main():
     )
     args = parser.parse_args()
 
-    model_dir = Path(args.model_dir)
-    if not model_dir.exists():
-        log(f"Model directory not found: {model_dir}", "error")
-        sys.exit(1)
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
 
-    # Get model path
-    model_path = get_model_path_from_dir(model_dir)
-    if not model_path:
-        log("Could not find model checkpoint", "error")
-        sys.exit(1)
-
-    log(f"Found model at: {model_path}")
-
-    # Introspect model
-    extracted = introspect_model_with_vllm(
-        model_path=model_path,
+    result = extract_vllm_config_func(
+        model_dir=args.model_dir,
         max_model_len=args.max_model_len,
+        test_load=args.test_load,
+        tensor_parallel_size=args.tp,
     )
 
-    # Optionally test loading
-    if args.test_load:
-        log("Testing model load...")
-        load_test = test_model_load(
-            model_path=model_path,
-            tensor_parallel_size=args.tp,
-            max_model_len=args.max_model_len,
-        )
-        extracted["load_test"] = load_test
-
-        # If OOM with TP=1, recommend higher TP
-        if not load_test["success"] and load_test.get("required_tp", 1) > 1:
-            extracted["recommended_tp"] = load_test["required_tp"]
-
-    # Let agent decide TP based on actual testing
-    # Previously: calculated tp from memory_gb / (gpu_memory * 0.85)
-    # Now: agent should try different TP values and learn from failures
-    extracted["recommended_tp"] = None  # Agent must experiment to find optimal TP
-
-    output_path = (
-        model_dir / ".llm-context" / "model-context" / "vllm_extracted_config.json"
-    )
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, "w") as f:
-        json.dump(extracted, f, indent=2)
-
-    log(f"Extracted config saved to: {output_path}")
-
-    # Print summary
-    if extracted["success"]:
-        log("Extraction successful!")
-        log(f"  Architecture: {extracted.get('architecture', 'unknown')}")
-        log(f"  Supported: {extracted.get('is_supported', False)}")
-        log(f"  Is MoE: {extracted.get('is_moe', False)}")
-        if extracted.get("memory_estimate"):
-            mem_est = extracted["memory_estimate"]
-            log(
-                f"  Est. Runtime Memory: ~{mem_est['memory_gb']:.1f}GB (approximate, may vary)"
-            )
-            log(
-                f"  Actual Model Size: {mem_est.get('actual_size_gb', 0):.1f}GB on disk"
-            )
-            log(f"  Parameters: {mem_est['parameters_b']:.1f}B (estimated from config)")
-        log(f"  Recommended TP: Let agent experiment (None)")
-    else:
-        log(f"Extraction failed: {extracted.get('error')}", "error")
-
-    sys.exit(0 if extracted["success"] else 1)
+    return 0 if result["success"] else 1
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+    import json
+    
+    parser = argparse.ArgumentParser(description="Extract vLLM config from model")
+    parser.add_argument("model_dir", help="Model directory")
+    parser.add_argument("--max-model-len", type=int, default=1024, help="Max model length for testing")
+    parser.add_argument("--test-load", action="store_true", help="Actually try loading model")
+    parser.add_argument("--tp", type=int, default=1, help="Tensor parallel size for test load")
+    parser.add_argument("--json", action="store_true", help="Output as JSON")
+    args = parser.parse_args()
+    
+    result = extract_vllm_config_func(
+        model_dir=args.model_dir,
+        max_model_len=args.max_model_len,
+        test_load=args.test_load,
+        tensor_parallel_size=args.tp,
+    )
+    
+    if args.json:
+        print(json.dumps(result))
+    else:
+        # Human readable output
+        if result["success"]:
+            print("Extraction successful!")
+            print(f"  Architecture: {result['config'].get('architecture', 'unknown')}")
+        else:
+            print(f"Extraction failed: {result.get('error', 'Unknown error')}")
+    
+    sys.exit(0 if result["success"] else 1)

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 import yaml
+from jinja2 import Environment, BaseLoader
 
 
 class PromptManager:
@@ -142,48 +143,30 @@ class PromptManager:
             )
 
     def _render_template(self, template: str, context: Dict[str, Any]) -> str:
-        """
-        Simple template renderer (Jinja2-style).
+        env = Environment(loader=BaseLoader())
 
-        Supports:
-        - {{variable}} - variable substitution
-        - {{variable|json}} - JSON encode
-        - {{variable|indent}} - indent multiline strings
-        """
-        result = template
+        def json_filter(value):
+            return json.dumps(value, indent=2, default=str)
 
-        # Find all template variables
-        pattern = r"\{\{\s*([\w.]+)(?:\|(\w+))?\s*\}\}"
+        def indent_filter(value):
+            if isinstance(value, str):
+                lines = value.split("\n")
+                return "\n  ".join(lines)
+            return str(value)
 
-        for match in re.finditer(pattern, template):
-            full_match = match.group(0)
-            var_path = match.group(1)
-            filter_name = match.group(2)
+        def upper_filter(value):
+            return str(value).upper()
 
-            # Get value from context
-            value = self._get_nested_value(context, var_path)
+        def lower_filter(value):
+            return str(value).lower()
 
-            # Apply filters
-            if filter_name == "json":
-                value = json.dumps(value, indent=2, default=str)
-            elif filter_name == "indent":
-                if isinstance(value, str):
-                    lines = value.split("\n")
-                    value = "\n  ".join(lines)
-            elif filter_name == "upper":
-                value = str(value).upper()
-            elif filter_name == "lower":
-                value = str(value).lower()
+        env.filters["json"] = json_filter
+        env.filters["indent"] = indent_filter
+        env.filters["upper"] = upper_filter
+        env.filters["lower"] = lower_filter
 
-            # Convert to string
-            if value is None:
-                value = ""
-            elif not isinstance(value, str):
-                value = str(value)
-
-            result = result.replace(full_match, value)
-
-        return result
+        jinja_template = env.from_string(template)
+        return jinja_template.render(**context)
 
     def _get_nested_value(self, data: Dict, path: str) -> Any:
         """Get a nested value from a dictionary using dot notation."""

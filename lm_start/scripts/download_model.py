@@ -20,14 +20,14 @@ Usage:
 
 import argparse
 import json
+import logging
 import os
-import re
 import subprocess
 import sys
-from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any
 
+logger = logging.getLogger(__name__)
 
 TMUX_PREFIX = "mdl_"
 
@@ -61,7 +61,7 @@ def create_tmux_session(session_name: str, command: str, working_dir: str) -> bo
         )
         return True
     except subprocess.CalledProcessError as e:
-        print(f"Failed to create tmux session: {e}")
+        logger.error(f"Failed to create tmux session: {e}")
         return False
 
 
@@ -147,7 +147,7 @@ def get_download_size(model_id: str) -> Optional[float]:
     return None
 
 
-def download_model(
+def download_model_func(
     model_id: str,
     model_dir: str,
     hf_home: str,
@@ -160,9 +160,10 @@ def download_model(
     Download model using huggingface-cli.
 
     Returns:
-        Dict with status, local_path, and session_name (if using tmux)
+        Dict with success, status, local_path, session_name (if using tmux), and error
     """
     result = {
+        "success": False,
         "status": "unknown",
         "local_path": None,
         "session_name": None,
@@ -170,8 +171,9 @@ def download_model(
     }
 
     if check_model_downloaded(model_id, hf_home):
-        print(f"Model already downloaded: {model_id}")
+        logger.info(f"Model already downloaded: {model_id}")
         local_path = get_model_cache_path(model_id, hf_home)
+        result["success"] = True
         result["status"] = "already_downloaded"
         result["local_path"] = local_path
         return result
@@ -196,32 +198,32 @@ def download_model(
 
     if use_tmux:
         if tmux_session_exists(session_name):
-            print(f"Tmux session already exists: {session_name}")
-            print(f"Attach with: tmux attach -t {session_name}")
+            logger.info(f"Tmux session already exists: {session_name}")
+            logger.info(f"Attach with: tmux attach -t {session_name}")
+            result["success"] = True
             result["status"] = "in_progress"
             result["session_name"] = session_name
             return result
 
         env_export = f"export HF_HOME={hf_home} && "
         cmd_str = env_export + " ".join(cmd)
-        print(f"Starting download in tmux session: {session_name}")
-        print(f"Command: {cmd_str}")
+        logger.info(f"Starting download in tmux session: {session_name}")
+        logger.info(f"Command: {cmd_str}")
 
         if create_tmux_session(session_name, cmd_str, model_dir):
-            print(f"\nDownload started in background.")
-            print(f"  Check status: tmux attach -t {session_name}")
-            print(
-                f"  Or: python download_model.py {model_id} --model-dir {model_dir} --status"
-            )
+            logger.info(f"\nDownload started in background.")
+            logger.info(f"  Check status: tmux attach -t {session_name}")
+            result["success"] = True
             result["status"] = "started"
             result["session_name"] = session_name
         else:
+            result["success"] = False
             result["status"] = "failed"
             result["error"] = "Failed to create tmux session"
     else:
-        print(f"Downloading model: {model_id}")
-        print(f"HF_HOME: {hf_home}")
-        print(f"Command: {' '.join(cmd)}")
+        logger.info(f"Downloading model: {model_id}")
+        logger.info(f"HF_HOME: {hf_home}")
+        logger.info(f"Command: {' '.join(cmd)}")
 
         try:
             process = subprocess.Popen(
@@ -234,19 +236,22 @@ def download_model(
             )
 
             for line in iter(process.stdout.readline, ""):
-                print(line, end="")
+                logger.info(line.rstrip())
 
             process.wait()
 
             if process.returncode == 0:
-                print(f"\nDownload completed successfully!")
+                logger.info(f"Download completed successfully!")
+                result["success"] = True
                 result["status"] = "completed"
                 result["local_path"] = get_model_cache_path(model_id, hf_home)
             else:
+                result["success"] = False
                 result["status"] = "failed"
                 result["error"] = f"Download failed with code {process.returncode}"
 
         except Exception as e:
+            result["success"] = False
             result["status"] = "failed"
             result["error"] = str(e)
 
@@ -370,9 +375,11 @@ def main():
                 print(f"\n  Last output:\n  {status['last_output']}")
         return
 
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+
     token = args.token or check_hf_token()
 
-    result = download_model(
+    result = download_model_func(
         model_id=model_id,
         model_dir=args.model_dir,
         hf_home=args.hf_home,
@@ -388,9 +395,11 @@ def main():
             {"download_status": "completed", "local_model_path": result["local_path"]},
         )
 
-    if result["status"] == "failed":
-        sys.exit(1)
+    if not result["success"] or result["status"] == "failed":
+        return 1
+
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

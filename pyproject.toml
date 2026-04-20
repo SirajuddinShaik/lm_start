@@ -14,15 +14,21 @@ dependencies = [
     "pyyaml",
     "psutil",
     "rich",
+    "jinja2",
 ]
 
 [project.scripts]
-lm-start = "lm_start.cli:app"
+lm-start = "lm_start:app"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["lm_start*", "agents*", "utils*", "core*", "configs*"]
+include = ["lm_start*"]
+exclude = ["lm_start.backup*", "tests*", "docs*"]
 
 [tool.setuptools.package-data]
-lm_start = ["templates/**/*", "../prompts/**/*"]
-"*" = ["*.yaml", "*.json", "*.md", "*.sh", "*.txt"]
+lm_start = [
+    "templates/**/*",
+    "prompts/**/*",
+    "configs/**/*",
+    "scripts/*.sh",
+]

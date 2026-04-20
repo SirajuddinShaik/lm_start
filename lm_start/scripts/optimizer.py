@@ -20,11 +20,11 @@ from datetime import datetime
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from agents import ExperimentAgentV2
-from agents.base import AgentResult
-from core.config import get_config
-from opencode_agentic_orchestrator import OpenCodeAgenticOrchestrator
-from vllm_flag_validator import validate_vllm_flags
+from lm_start.agents import ExperimentAgentV2
+from lm_start.agents.base import AgentResult
+from lm_start.core.config import get_config
+from lm_start.scripts.orchestrator import OpenCodeAgenticOrchestrator
+from lm_start.vllm_flag_validator import validate_vllm_flags
 
 
 class OptimizationHistory:
@@ -143,41 +143,35 @@ class OptimizationHistory:
         return analysis
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Advanced Agentic vLLM Optimization")
-    parser.add_argument("--model-dir", required=True, help="Model directory")
-    parser.add_argument(
-        "--min-context",
-        type=int,
-        default=8192,
-        help="Minimum acceptable context (default: 8192)",
-    )
-    parser.add_argument(
-        "--max-iterations",
-        type=int,
-        default=3,
-        help="Maximum optimization iterations (default: 3)",
-    )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Force re-optimization even if already optimized",
-    )
-    parser.add_argument("--verbose", action="store_true", help="Verbose output")
-    parser.add_argument(
-        "--agentic",
-        action="store_true",
-        help="Use OpenCode-based agentic optimization (Planner + Summarizer agents)",
-    )
-    args = parser.parse_args()
+def optimize_vllm_config(
+    model_dir: str,
+    min_context: int = 8192,
+    max_iterations: int = 3,
+    force: bool = False,
+    verbose: bool = False,
+    agentic: bool = True,
+) -> Dict[str, Any]:
+    """Optimize vLLM configuration for the model.
 
-    model_dir = Path(args.model_dir)
+    Returns:
+        Dict with 'success', 'config', 'is_satisfied', and 'error' keys
+    """
+    result = {
+        "success": False,
+        "config": None,
+        "is_satisfied": False,
+        "error": None,
+    }
+
+    model_dir_path = Path(model_dir)
 
     # Load model info
-    model_info_file = model_dir / ".llm-context" / "model-context" / "model_info.json"
+    model_info_file = (
+        model_dir_path / ".llm-context" / "model-context" / "model_info.json"
+    )
     if not model_info_file.exists():
-        print(f"Error: model_info.json not found at {model_info_file}")
-        return 1
+        result["error"] = f"model_info.json not found at {model_info_file}"
+        return result
 
     with open(model_info_file) as f:
         model_info = json.load(f)
@@ -185,23 +179,25 @@ def main():
     model_id = model_info.get("model_id", "")
 
     # Load optimization history
-    history = OptimizationHistory(model_dir)
+    history = OptimizationHistory(model_dir_path)
 
     # Check if already optimized
-    is_optimized, reason = history.is_already_optimized(args.min_context)
-    if is_optimized and not args.force:
+    is_optimized, reason = history.is_already_optimized(min_context)
+    if is_optimized and not force:
         print(f"\n[INFO] Model appears to be already optimized.")
         print(f"       {reason}")
-        print(f"\nUse --force to re-optimize anyway.")
-        return 0
-    elif is_optimized and args.force:
+        print(f"\nUse force=True to re-optimize anyway.")
+        result["success"] = True
+        result["config"] = history.history.get("best_config", {})
+        result["is_satisfied"] = True
+        return result
+    elif is_optimized and force:
         print(f"\n[INFO] Forcing re-optimization despite: {reason}")
     else:
         print(f"\n[INFO] {reason}")
 
     # Get config
     config = get_config()
-    context_targets = config.experiment.context_targets
 
     # Default base config (used if no iterations run)
     base_config = {
@@ -222,17 +218,15 @@ def main():
         if analysis["recommendation"]:
             print(f"           Recommendation: {analysis['recommendation']}")
 
-    improvements_made = False
-
     start_time = time.time()
 
-    result = None
-    if args.agentic:
+    opt_result = None
+    if agentic:
         orchestrator = OpenCodeAgenticOrchestrator(
             model_dir=str(model_dir),
             model_id=model_id,
-            goal=f"maximize context (minimum {args.min_context})",
-            force=args.force,
+            goal=f"maximize context (minimum {min_context})",
+            force=force,
         )
         orchestrator.run()
         result = AgentResult(
@@ -247,7 +241,7 @@ def main():
         agent = ExperimentAgentV2(
             model_dir=str(model_dir),
             max_retries=config.experiment.max_runs,
-            verbose=args.verbose,
+            verbose=verbose,
             hf_home=config.paths.hf_home,
         )
         result = agent.run({})
@@ -277,7 +271,7 @@ def main():
     else:
         print(f"\n[FAILED] Optimization did not improve ({elapsed:.1f}s)")
 
-    if best_context >= args.min_context:
+    if best_context >= min_context:
         history.history["is_satisfied"] = True
         history.save()
 
@@ -345,10 +339,10 @@ def main():
     print(f"\n[OUTPUT] Config saved to: {output_file}")
 
     if history.history["is_satisfied"]:
-        print(f"\n✓ SATISFIED: Achieved target context {args.min_context}")
+        print(f"\n✓ SATISFIED: Achieved target context {min_context}")
         return 0
     elif improvements_made:
-        print(f"\n⚠ PARTIAL: Made improvements but didn't reach {args.min_context}")
+        print(f"\n⚠ PARTIAL: Made improvements but didn't reach {min_context}")
         return 0
     else:
         print(f"\n✗ NO IMPROVEMENT: Could not improve beyond current config")

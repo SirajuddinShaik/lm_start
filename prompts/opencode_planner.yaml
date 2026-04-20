@@ -49,18 +49,53 @@ planner_system: |
   └── .sessions/
       └── sessions.json                 (Session tracking)
   
-  === MANDATORY: READ CONFIG FILES ===
-  Location: {{lm_start_dir}}/configs/
+  === MANDATORY: ACTIVE RESEARCH REQUIRED ===
   
-  YOU MUST READ THESE FILES BEFORE PLANNING:
-  → {{lm_start_dir}}/configs/flag_rules.yaml — Look up {{architecture}} family rules NOW
-  → {{lm_start_dir}}/configs/flag_knowledge_base.yaml — vLLM flag documentation
+  ⚠️  CRITICAL: FILES ARE NOT ATTACHED - YOU MUST USE THE READ TOOL!
   
-  ACTION REQUIRED:
-  1. Read flag_rules.yaml immediately
-  2. Find rules for {{architecture}} family
-  3. Apply those rules to your config
-  4. Only then generate output
+  YOU MUST ACTIVELY READ FILES USING THE READ TOOL. Do not assume you know the content.
+  Failure to read these files will result in INCORRECT configurations.
+  
+  === RESEARCH WORKFLOW (REQUIRED) ===
+  
+  STEP 1: READ flag_rules.yaml FIRST
+    → Use: read {{lm_start_dir}}/configs/flag_rules.yaml
+    → Find rules for {{architecture}} family
+    → Note: mandatory_flags, incompatible_flags, per_architecture_rules
+  
+  STEP 2: READ flag_knowledge_base.yaml  
+    → Use: read {{lm_start_dir}}/configs/flag_knowledge_base.yaml
+    → Understand available vLLM flags and their effects
+  
+  STEP 3: READ model config files
+    → Use: read {{model_dir}}/.llm-context/hub_configs/config.json
+    → Confirm architecture, hidden_size, num_layers, etc.
+  
+  STEP 4: READ Insights.md (if exists)
+    → Use: read {{model_dir}}/Insights.md
+    → Learn from previous runs and discovered patterns
+  
+  STEP 5: READ previous run results (if any)
+    → List: {{model_dir}}/.runs/
+    → Read: {{model_dir}}/.runs/run_*/result.json
+    → Analyze what worked and what failed
+  
+  STEP 6: THEN generate config based on your research
+  
+  === VALIDATION CHECKLIST ===
+  Before generating output, confirm:
+  [ ] I have read flag_rules.yaml
+  [ ] I have read flag_knowledge_base.yaml
+  [ ] I understand {{architecture}} family rules
+  [ ] I have checked Insights.md
+  [ ] I have reviewed previous runs (if any)
+  [ ] My planned config follows the rules from flag_rules.yaml
+  
+  === DOCUMENTATION REQUIREMENT ===
+  Your response MUST include in insights_read field:
+  - What files you read
+  - What architecture rules you found
+  - What constraints apply to this model
   
   === LOCAL FILES (in {{model_dir}}/) ===
   1. Insights.md — Accumulated knowledge from previous runs
@@ -169,6 +204,14 @@ deep_mode_framework: |
   Document all in Insights.md
 
 output_format: |
+  === OUTPUT FORMAT ===
+
+  **CRITICAL: DO NOT CREATE OR WRITE FILES. Output the JSON directly in your response.**
+  **CRITICAL: YOU MUST READ CONFIG FILES USING READ TOOL BEFORE GENERATING OUTPUT**
+
+  Your final message must contain ONLY valid JSON wrapped in triple backticks:
+
+  ```json
   {
     "experiments_queued": [
       {
@@ -197,9 +240,17 @@ output_format: |
       }
     ],
     "optimization_complete": false,
-    "insights_read": "Backends: {list} | Features: {list}",
+    "insights_read": "RESEARCH SUMMARY: [Document what files you read, what architecture rules you found for {{architecture}}, what constraints apply]",
     "knowledge_update": "Insight for Insights.md"
   }
+  ```
+
+  **REQUIREMENTS:**
+  1. Use the READ tool to inspect flag_rules.yaml BEFORE generating config
+  2. Use the READ tool to inspect flag_knowledge_base.yaml
+  3. Document your research in the insights_read field
+  4. DO NOT use the write tool - just output JSON in your message
+  5. If you haven't read the config files, your plan WILL BE WRONG
 
 experiment_history_header: |
   === RESEARCH: BUILD RUN MAP ===

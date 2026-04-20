@@ -33,7 +33,7 @@ from .base import BaseAgent, AgentResult, AgentStatus
 import sys
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from utils.theoretical_calculator import (
+from lm_start.utils.theoretical_calculator import (
     TheoreticalCalculator,
     HardwareConfig,
     ModelConfig,
@@ -41,15 +41,15 @@ from utils.theoretical_calculator import (
     get_model_size_from_id,
     detect_model_capabilities,
 )
-from utils.model_utils import (
+from lm_start.utils.model_utils import (
     get_model_cache_path,
     load_vllm_extracted_config,
     VLLMExtractedConfig,
 )
-from utils.benchmark_runner import BenchmarkRunner, save_benchmark_results
-from utils.vllm_flag_selector import VLLMFlagSelector, OptimizationProfile
-from utils.profile_config_generator import ProfileConfigGenerator
-from vllm_flag_validator import validate_vllm_flags
+from lm_start.utils.benchmark_runner import BenchmarkRunner, save_benchmark_results
+from lm_start.utils.vllm_flag_selector import VLLMFlagSelector, OptimizationProfile
+from lm_start.utils.profile_config_generator import ProfileConfigGenerator
+from lm_start.vllm_flag_validator import validate_vllm_flags
 
 
 class ExperimentAgent(BaseAgent):
@@ -190,7 +190,9 @@ class ExperimentAgent(BaseAgent):
     def _load_all_context(self):
         """Load all context files."""
         # 1. Load model_info.json
-        model_info_path = self.model_dir / ".llm-context" / "model-context" / "model_info.json"
+        model_info_path = (
+            self.model_dir / ".llm-context" / "model-context" / "model_info.json"
+        )
         if model_info_path.exists():
             with open(model_info_path) as f:
                 self.model_info = json.load(f)
@@ -198,7 +200,9 @@ class ExperimentAgent(BaseAgent):
             self.log(f"Model ID: {self.model_id}")
 
         # 2. Load device_config.json
-        device_config_path = self.model_dir / ".llm-context" / "model-context" / "device_config.json"
+        device_config_path = (
+            self.model_dir / ".llm-context" / "model-context" / "device_config.json"
+        )
         if device_config_path.exists():
             with open(device_config_path) as f:
                 self.device_config = json.load(f)
@@ -842,8 +846,30 @@ class ExperimentAgent(BaseAgent):
                     )
                     break
 
-                # Otherwise try to increase context back up
-                # (This shouldn't happen with current algorithm, but future-proofing)
+                # Try to optimize further - explore next parameter variations
+                # Mark this config as baseline and try next variation
+                next_config = self._generate_next_config(
+                    current_config, reduction_phase, reduction_index
+                )
+
+                if next_config is not None:
+                    self.log(f"Trying next parameter variation...")
+                    current_config = next_config
+                    reduction_index += 1
+
+                    # If we've exhausted this phase's values, move to next phase
+                    if reduction_index >= len(
+                        self.reduction_priority[reduction_phase]["values"]
+                    ):
+                        reduction_phase += 1
+                        reduction_index = 0
+                else:
+                    # Exhausted parameter variations, consider this config final
+                    self.log(
+                        f"✓ Config optimized. Context: {current_config['max_model_len']:,}",
+                        "success",
+                    )
+                    break
 
             else:
                 error_type = result.get("error_type", "unknown")

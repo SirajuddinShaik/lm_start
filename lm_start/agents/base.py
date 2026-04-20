@@ -17,7 +17,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 
-from utils.prompt_manager import get_prompt, get_mock_response
+from lm_start.utils.prompt_manager import get_prompt, get_mock_response
 
 
 class AgentStatus(Enum):

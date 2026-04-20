@@ -95,8 +95,9 @@ class OpenCodeAgenticOrchestrator:
     def _extract_session_id(self, output: str) -> Optional[str]:
         import re
 
-        match = re.search(r"ses_[a-zA-Z0-9]+", output)
-        return match.group(0) if match else None
+        # Find ALL session IDs and return the LAST one (most recent)
+        matches = re.findall(r"ses_[a-zA-Z0-9]+", output)
+        return matches[-1] if matches else None
 
     def _get_latest_opencode_session(self, title_hint: str = None) -> Optional[str]:
         try:
@@ -110,7 +111,8 @@ class OpenCodeAgenticOrchestrator:
                 return None
 
             lines = result.stdout.strip().split("\n")
-            for line in lines[1:]:
+            # Iterate in reverse to get LATEST session first
+            for line in reversed(lines[1:]):
                 parts = line.split()
                 if len(parts) >= 3:
                     session_id = parts[0]
@@ -140,6 +142,10 @@ class OpenCodeAgenticOrchestrator:
             with open(self.sessions_file) as f:
                 sessions = json.load(f)
 
+        # Remove existing session for same phase (override on rerun)
+        if phase:
+            sessions = [s for s in sessions if s.get("phase") != phase]
+
         session_entry = {
             "session_id": session_id,
             "agent_type": agent_type,
@@ -157,7 +163,8 @@ class OpenCodeAgenticOrchestrator:
         with open(self.sessions_file, "w") as f:
             json.dump(sessions, f, indent=2)
 
-        print(f"[SESSION] Saved: {session_id} ({agent_type})")
+        action = "Overriding" if phase else "Saving"
+        print(f"[SESSION] {action}: {session_id} ({agent_type})")
         if run_id:
             print(f"          Run ID: {run_id}")
         if phase:
@@ -206,7 +213,6 @@ class OpenCodeAgenticOrchestrator:
             else:
                 print(f"[WARN] Could not identify process using port {target_port}")
         else:
-            print(f"[DEBUG] Port {target_port} is free, no processes to kill")
             return killed
 
         for pid in pids_to_kill:
@@ -287,7 +293,10 @@ class OpenCodeAgenticOrchestrator:
 
     def _load_prompts(self) -> Dict[str, Any]:
         """Load prompts from YAML files."""
-        prompts_dir = Path(__file__).parent / "prompts"
+        # Try scripts/prompts first, then fall back to lm_start/prompts
+        scripts_prompts = Path(__file__).parent / "prompts"
+        lm_start_prompts = Path(__file__).parent.parent / "prompts"
+        prompts_dir = scripts_prompts if scripts_prompts.exists() else lm_start_prompts
         prompts = {}
 
         planner_file = prompts_dir / "opencode_planner.yaml"
@@ -334,12 +343,16 @@ class OpenCodeAgenticOrchestrator:
 
         return context
 
+    AGENT_FAILURE_EXIT_CODE = 2  # Exit code when planner fails to generate valid JSON
+
     def spawn_planner_agent(self) -> Dict[str, Any]:
         """
         Spawn Master Planner Agent via OpenCode CLI.
 
         Returns experiment queue from planner.
+        Sets self._planner_failed flag if agent couldn't generate valid JSON.
         """
+        self._planner_failed = False  # Reset flag
         print("\n" + "=" * 60)
         print("SPAWNING MASTER PLANNER AGENT")
         print("=" * 60)
@@ -353,7 +366,6 @@ class OpenCodeAgenticOrchestrator:
         with open(prompt_file, "w") as f:
             f.write(prompt)
 
-        # Spawn opencode session in model directory
         cmd = [
             self.opencode_bin,
             "run",
@@ -366,14 +378,6 @@ class OpenCodeAgenticOrchestrator:
             str(prompt_file),
         ]
 
-        # Attach flag knowledge base files
-        flag_kb = Path(__file__).parent / "configs" / "flag_knowledge_base.yaml"
-        flag_rules = Path(__file__).parent / "configs" / "flag_rules.yaml"
-        if flag_kb.exists():
-            cmd.extend(["--file", str(flag_kb)])
-        if flag_rules.exists():
-            cmd.extend(["--file", str(flag_rules)])
-
         print(f"Running: planner agent with knowledge base...")
 
         try:
@@ -382,7 +386,7 @@ class OpenCodeAgenticOrchestrator:
                 capture_output=True,
                 text=True,
                 timeout=300,
-                env=self.config.get_env_dict(),
+                env=self.config.get_env_dict(str(self.model_dir / ".venv")),
             )
 
             debug_file = self.opencode_dir / "planner_output_debug.txt"
@@ -414,6 +418,16 @@ class OpenCodeAgenticOrchestrator:
             with open(self.master_plan_file, "w") as f:
                 json.dump(plan, f, indent=2)
 
+            # Check if planner failed to generate valid experiments
+            if (
+                plan.get("optimization_complete")
+                and len(plan.get("experiments_queued", [])) == 0
+                and plan.get("reasoning", "").startswith("Failed to parse")
+            ):
+                self._planner_failed = True
+                print(f"✗ Planner failed to generate valid JSON")
+                return plan
+
             print(
                 f"✓ Planner returned {len(plan.get('experiments_queued', []))} experiments"
             )
@@ -423,10 +437,12 @@ class OpenCodeAgenticOrchestrator:
 
         except subprocess.TimeoutExpired:
             print("✗ Planner timed out")
-            return {"experiments_queued": [], "optimization_complete": True}
+            self._planner_failed = True
+            sys.exit(self.AGENT_FAILURE_EXIT_CODE)
         except Exception as e:
             print(f"✗ Planner failed: {e}")
-            return {"experiments_queued": [], "optimization_complete": True}
+            self._planner_failed = True
+            sys.exit(self.AGENT_FAILURE_EXIT_CODE)
 
     def _build_planner_prompt(self, context: Dict, history: List[Dict]) -> str:
         """Build dynamic planner prompt from context using external prompt files."""
@@ -434,17 +450,14 @@ class OpenCodeAgenticOrchestrator:
         model = context.get("model_info", {})
         model_cfg = context.get("model_config", {})
 
-        # Extract device details
         gpu_info = device.get("gpus", {})
         gpu_count = gpu_info.get("count", 0)
         gpu_names = gpu_info.get("names", ["unknown"])
         gpu_memory = gpu_info.get("memory_gb_per_gpu", 0)
         compute_capability = gpu_info.get("compute_capability", "unknown")
 
-        # Extract model details - fallback to model_info.json if HF config fails
         model_id = model.get("model_id", "unknown")
 
-        # Try HF config first (handle nested text_config for models like gemma-4)
         text_config = model_cfg.get("text_config", {})
         max_position = model_cfg.get("max_position_embeddings", 0) or text_config.get(
             "max_position_embeddings", 0
@@ -459,35 +472,60 @@ class OpenCodeAgenticOrchestrator:
             "num_attention_heads", 0
         ) or text_config.get("num_attention_heads", 0)
 
-        # Fallback to model_info.json for unsupported architectures (like gemma4)
         if not max_position:
             max_position = model.get("context_length", 0)
         if not num_layers:
-            num_layers = model_cfg.get("num_layers", 0)  # Some models store it here
+            num_layers = model_cfg.get("num_layers", 0)
         if not hidden_size:
-            hidden_size = model_cfg.get("d_model", 0)  # Alternate field name
+            hidden_size = model_cfg.get("d_model", 0)
         if not num_attention_heads:
-            num_attention_heads = model_cfg.get("num_heads", 0)  # Alternate field name
+            num_attention_heads = model_cfg.get("num_heads", 0)
 
-        # Estimate parameters
         estimated_params = (
             (num_layers * hidden_size * hidden_size * 12) / 1e9
             if num_layers and hidden_size
             else 0
         )
 
-        # Build context variables for template substitution
         target_context = max_position if max_position else 32768
         calc_max_num_seqs = min(256, max(64, target_context // 256))
         calc_batched_tokens = min(65536, target_context * 2)
         calc_gpu_util = 0.90
 
+        # Respect CUDA_VISIBLE_DEVICES - use visible count if set
+        visible_devices = device.get("gpus", {}).get("visible_devices", "")
+        if visible_devices and "," in str(visible_devices):
+            # Count actual visible GPUs
+            visible_count = len(str(visible_devices).split(","))
+            effective_gpu_count = visible_count
+        else:
+            effective_gpu_count = gpu_count
+
+        # Calculate model folder size
+        model_folder_size_gb = 0
+        try:
+            import subprocess
+
+            result = subprocess.run(
+                ["du", "-sb", str(self.model_dir)],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                size_bytes = int(result.stdout.split()[0])
+                model_folder_size_gb = round(size_bytes / (1024**3), 1)
+        except:
+            pass
+
         template_vars = {
-            "gpu_count": gpu_count,
+            "gpu_count": effective_gpu_count,
+            "gpu_total_count": gpu_count,
             "gpu_names": gpu_names[0] if gpu_names else "unknown",
             "gpu_memory": gpu_memory,
-            "gpu_memory_total": gpu_count * gpu_memory,
+            "gpu_memory_total": effective_gpu_count * gpu_memory,
             "compute_capability": compute_capability,
+            "model_folder_size_gb": model_folder_size_gb,
             "cuda_version": device.get("cuda", {}).get("version", "unknown"),
             "system_ram": device.get("system", {}).get("total_ram_gb", 0),
             "model_id": model_id,
@@ -515,13 +553,15 @@ class OpenCodeAgenticOrchestrator:
             "calc_max_num_seqs": calc_max_num_seqs,
             "calc_batched_tokens": calc_batched_tokens,
             "calc_gpu_util": calc_gpu_util,
+            "memory_warning": False,
+            "seq_warning": False,
         }
 
         planner_prompts = self.prompts.get("planner", {})
 
         sections = [
             planner_prompts.get("planner_system", ""),
-            "{{experiment_history}}",
+            template_vars["experiment_history"],
             planner_prompts.get("decision_framework", ""),
             planner_prompts.get("error_patterns", ""),
             planner_prompts.get("task_instructions", ""),
@@ -531,14 +571,8 @@ class OpenCodeAgenticOrchestrator:
 
         prompt = "\n\n".join(section for section in sections if section)
 
-        # Simple template substitution
-        for key, value in template_vars.items():
-            placeholder = f"{{{{{key}}}}}"
-            if isinstance(value, (list, dict)):
-                value = json.dumps(value, indent=2)
-            prompt = prompt.replace(placeholder, str(value))
-
-        return prompt
+        pm = PromptManager()
+        return pm._render_template(prompt, template_vars)
 
     def _load_experiment_history_from_runs(self) -> List[Dict]:
         history = []
@@ -621,11 +655,11 @@ class OpenCodeAgenticOrchestrator:
                     else "Performance: completed"
                 )
             elif error:
-                lines.append(
-                    f"Error: {error[:100]}..."
-                    if len(str(error)) > 100
-                    else f"Error: {error}"
-                )
+                error_str = str(error)
+                if len(error_str) > 100:
+                    lines.append(f"Error: {error_str[:100]}...")
+                else:
+                    lines.append(f"Error: {error_str}")
 
             lines.append(
                 f"Result: {'Working config found' if success else 'Failed - see error above'}"
@@ -689,40 +723,26 @@ class OpenCodeAgenticOrchestrator:
 
         Creates run directory, spawns vLLM, runs benchmark.
         """
-        run_id = experiment["id"]
-        run_name = experiment.get("name", f"run_{run_id}")
+        run_name = experiment.get("name", f"run_{experiment['id']}")
+        run_id = run_name
         config = experiment["config"]
 
         requested_port = config.get("port", 8000)
         if self._is_port_in_use(requested_port):
-            print(
-                f"[WARN] Requested port {requested_port} is in use, finding alternative..."
-            )
             port = self._find_free_port(start_port=8000, end_port=9000)
-            print(f"[INFO] Using alternative port: {port}")
+            print(f"│  │  ⚠️  Port {requested_port} busy, using {port}")
         else:
             port = requested_port
 
         config["port"] = port
 
-        print(f"[DEBUG] execute_experiment started for {run_id}")
-        print(f"\n[STEP 1/4] Preparing experiment environment...")
-        print(f"           Port {port}: checking if in use...")
-        print(f"[DEBUG] Killing existing vLLM processes on port {port}...")
+        print(f"┌─ Experiment {run_id}")
+        print(f"│  │  🚀 Phase 1/3: Starting vLLM on port {port}...")
         self._kill_existing_vllm(target_port=port)
-        print(f"[DEBUG] Existing processes killed")
-
-        print(f"[STEP 2/4] Testing vLLM health check...")
-
-        print(f"\n" + "=" * 60)
-        print(f"EXECUTING EXPERIMENT: {run_name} (ID: {run_id})")
-        print("=" * 60)
-        print(f"[DEBUG] Using profile: {experiment.get('profile', 'balanced')}")
 
         # Apply profile if specified
         profile = experiment.get("profile", "balanced")
         if profile in ["speed", "quality", "balanced"]:
-            print(f"Applying profile: {profile}")
             generator = ProfileConfigGenerator(self.model_dir)
             profiles = generator.generate_profiles(config)
             profile_map = {
@@ -735,7 +755,7 @@ class OpenCodeAgenticOrchestrator:
         if str(run_id).startswith("run_"):
             run_dir = self.runs_dir / str(run_id)
         else:
-            run_dir = self.runs_dir / f"run_{run_id}"
+        run_dir = self.runs_dir / (run_id if str(run_id).startswith("run_") else f"run_{run_id}")
 
         if run_dir.exists():
             suffix = uuid.uuid4().hex[:4]
@@ -744,7 +764,7 @@ class OpenCodeAgenticOrchestrator:
             else:
                 run_id = f"run_{run_id}_{suffix}"
             run_dir = self.runs_dir / run_id
-            print(f"[INFO] Run ID collision detected, using: {run_id}")
+            print(f"│  │  ℹ️  Using {run_id}")
 
         run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -773,49 +793,54 @@ class OpenCodeAgenticOrchestrator:
         venv_python = self.model_dir / ".venv" / "bin" / "python"
         vllm_cmd = self._build_vllm_command(config)
 
-        print(f"│  │  🟢 Starting vLLM for {run_name} (waiting for health check)...")
-
         try:
-            print(f"[DEBUG] Spawning vLLM process on port {port}...")
-            print(f"│  │  🚀 vLLM starting...")
-
             stdout_log = open(run_dir / "vllm_stdout.log", "w")
             stderr_log = open(run_dir / "vllm_stderr.log", "w")
+
+            # Get model's venv path to prevent inheriting wrong VIRTUAL_ENV
+            model_venv = self.model_dir / ".venv"
 
             process = subprocess.Popen(
                 vllm_cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 cwd=self.model_dir,
-                env=self.config.get_env_dict(),
+                env=self.config.get_env_dict(
+                    str(model_venv) if model_venv.exists() else None
+                ),
                 text=True,
                 bufsize=1,
             )
 
-            print(f"[DEBUG] vLLM process started with PID: {process.pid}")
-            print(f"│  │  📋 Streaming vLLM output...")
-
             import threading
 
-            def stream_output(pipe, log_file, prefix):
+            def stream_output(pipe, log_file, prefix, printed_msgs):
                 for line in iter(pipe.readline, ""):
                     if line:
                         log_file.write(line)
                         log_file.flush()
-                        if "ERROR" in line or "error" in line.lower():
-                            print(f"│  │  ⚠️  {prefix}: {line.strip()[:80]}")
-                        elif (
-                            "GPU KV cache" in line
-                            or "Maximum concurrency" in line
-                            or "Using" in line
-                        ):
-                            print(f"│  │  ✨ {prefix}: {line.strip()[:80]}")
+                        msg = line.strip()[:80]
+                        # Only print if not seen before (avoid duplicates)
+                        if msg not in printed_msgs:
+                            if "ERROR" in line or "error" in line.lower():
+                                print(f"│  │  ⚠️  {prefix}: {msg}")
+                                printed_msgs.add(msg)
+                            elif (
+                                "GPU KV cache" in line
+                                or "Maximum concurrency" in line
+                                or "AttentionBackend" in line
+                            ):
+                                print(f"│  │  ✨ {prefix}: {msg}")
+                                printed_msgs.add(msg)
 
+            printed_messages = set()
             stdout_thread = threading.Thread(
-                target=stream_output, args=(process.stdout, stdout_log, "vLLM")
+                target=stream_output,
+                args=(process.stdout, stdout_log, "vLLM", printed_messages),
             )
             stderr_thread = threading.Thread(
-                target=stream_output, args=(process.stderr, stderr_log, "vLLM")
+                target=stream_output,
+                args=(process.stderr, stderr_log, "vLLM", printed_messages),
             )
             stdout_thread.daemon = True
             stderr_thread.daemon = True
@@ -823,8 +848,7 @@ class OpenCodeAgenticOrchestrator:
             stderr_thread.start()
 
             # Wait for health check
-            print(f"│  │  ⏳ Waiting for health check...")
-            health_ok = self._wait_for_health(port, process, timeout=1800)
+            health_ok, elapsed_time = self._wait_for_health(port, process, timeout=1800)
 
             if not health_ok:
                 print(f"│  │  ❌ Health check failed")
@@ -836,19 +860,19 @@ class OpenCodeAgenticOrchestrator:
                     "error_type": "STARTUP_TIMEOUT",
                 }
             else:
-                print(f"│  │  ✅ Health check successful!")
+                print(f"│  │  ✅ Health check passed ({elapsed_time:.1f}s)")
                 print(f"│  │")
-                print(f"│  │  🔥 Starting benchmark...")
+                print(f"│  │  📊 Phase 2/3: Benchmarking...")
                 benchmark = self._run_benchmark(port, run_dir, config)
 
                 bench = benchmark.get("summary", {})
                 throughput = bench.get("avg_throughput", 0)
+                ttft = bench.get("avg_ttft_ms", 0)
                 success_rate = bench.get("success_rate", 0) * 100
                 print(f"│  │")
                 print(
-                    f"│  │  📊 Benchmark complete: {throughput:.1f} tok/s, {success_rate:.0f}% success"
+                    f"│  │  📈 Results: {throughput:.0f} tok/s | TTFT: {ttft:.0f}ms | Success: {success_rate:.0f}%"
                 )
-                print(f"│  │")
                 print(f"│  │  🛑 Stopping vLLM...")
                 process.terminate()
                 process.wait(timeout=30)
@@ -875,9 +899,11 @@ class OpenCodeAgenticOrchestrator:
             try:
                 log_analysis = parse_vllm_logs(stdout_log, stderr_log)
 
+                log_analysis_summary = {k: v for k, v in log_analysis.items() if k != 'errors'}
+
                 if log_analysis["likely_success"] and result.get("success"):
                     result["success"] = True
-                    result["log_analysis"] = log_analysis
+                    result["log_analysis"] = log_analysis_summary
                 elif not log_analysis["likely_success"] and result.get("success"):
                     result["success"] = False
                     result["error"] = (
@@ -886,12 +912,12 @@ class OpenCodeAgenticOrchestrator:
                     result["error_type"] = log_analysis.get(
                         "error_classification", {}
                     ).get("type", "UNKNOWN")
-                    result["log_analysis"] = log_analysis
+                    result["log_analysis"] = log_analysis_summary
                 elif log_analysis["error_classification"]:
                     result["error_type"] = log_analysis["error_classification"].get(
                         "type", result.get("error_type", "UNKNOWN")
                     )
-                    result["log_analysis"] = log_analysis
+                    result["log_analysis"] = log_analysis_summary
 
             except Exception as e:
                 print(f"Warning: Log parsing failed: {e}")
@@ -937,47 +963,31 @@ class OpenCodeAgenticOrchestrator:
 
     def _wait_for_health(
         self, port: int, process: subprocess.Popen, timeout: int = 1800
-    ) -> bool:
+    ) -> tuple[bool, float]:
         """Wait for vLLM health check, abort if process dies."""
         start = time.time()
         url = f"http://localhost:{port}/health"
 
-        print(f"[DEBUG] _wait_for_health starting for port {port}")
-        print(f"Waiting for vLLM health check at {url} (timeout: {timeout}s)...")
+        print(f"│  │  ⏱️  Health check: waiting for vLLM...")
 
-        check_count = 0
         while time.time() - start < timeout:
-            check_count += 1
-            if check_count % 12 == 0:
-                elapsed = time.time() - start
-                print(
-                    f"[DEBUG] Still waiting for health check... {elapsed:.0f}s elapsed"
-                )
-
             # Check if process is still running
             if process.poll() is not None:
-                # Process died - read logs
-                print(f"✗ vLLM process died (exit code: {process.returncode})")
-                print(f"[DEBUG] Process exited at {time.time() - start:.1f}s")
-                return False
+                print(f"\n│  │  ✗ vLLM process died (exit code: {process.returncode})")
+                return False, time.time() - start
 
             try:
-                response = requests.get(url, timeout=5)
-                if response.status_code == 200:
-                    elapsed = time.time() - start
-                    print(f"✓ vLLM healthy after {elapsed:.1f}s")
-                    print(f"[DEBUG] Health check passed on attempt {check_count}")
-                    return True
-            except Exception as e:
-                if check_count == 1:
-                    print(
-                        f"[DEBUG] First health check attempt failed (expected): {type(e).__name__}"
-                    )
-            time.sleep(5)
+                response = requests.get(url, timeout=2)
+                elapsed = time.time() - start
+                print(f"│  │  ✅ Health check passed ({elapsed:.1f}s)")
+                return True, elapsed
+            except Exception:
+                pass
+            time.sleep(1)
 
-        print(f"✗ Health check timeout after {timeout}s")
-        print(f"[DEBUG] Timeout after {check_count} attempts")
-        return False
+        elapsed = time.time() - start
+        print(f"")
+        return False, elapsed
 
     def _run_benchmark(self, port: int, run_dir: Path, config: Dict) -> Dict[str, Any]:
         """Run benchmark against running vLLM using BenchmarkRunner."""
@@ -1009,14 +1019,9 @@ class OpenCodeAgenticOrchestrator:
             return {"error": str(e)}
 
     def spawn_summarizer_agent(self, run_id: str, result: Dict) -> Dict[str, Any]:
-        """
-        Spawn Run Summarizer Agent via OpenCode CLI.
-
-        Compresses logs and updates master plan.
-        """
-        print(f"\n" + "=" * 60)
-        print(f"SPAWNING SUMMARIZER FOR RUN {run_id}")
-        print("=" * 60)
+        """Spawn Run Summarizer Agent via OpenCode CLI."""
+        print(f"│  │")
+        print(f"│  │  📝 Phase 3/3: Summarizing...")
 
         run_dir = self.runs_dir / f"run_{run_id}"
 
@@ -1048,24 +1053,15 @@ class OpenCodeAgenticOrchestrator:
         if config_file.exists():
             cmd.extend(["--file", str(config_file)])
 
-        log_analysis_file = run_dir / "log_analysis.json"
-        if "log_analysis" in result:
-            log_analysis_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(log_analysis_file, "w") as f:
-                json.dump(result["log_analysis"], f, indent=2)
-            cmd.extend(["--file", str(log_analysis_file)])
-
         cmd.append("summarize")
-
-        print(f"Running: {' '.join(cmd[:8])}...")
 
         try:
             sub_result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=120,
-                env=self.config.get_env_dict(),
+                timeout=1800,
+                env=self.config.get_env_dict(str(self.model_dir / ".venv")),
             )
 
             session_id = self._extract_session_id(sub_result.stdout + sub_result.stderr)
@@ -1087,11 +1083,11 @@ class OpenCodeAgenticOrchestrator:
                 )
 
             self._archive_logs(run_id, run_dir)
-
+            print(f"│  │  ✅ Summary complete")
             return {"success": True}
 
         except Exception as e:
-            print(f"✗ Summarizer failed: {e}")
+            print(f"│  │  ⚠️ Summarizer failed: {e}")
             return {"success": False, "error": str(e)}
 
     def _build_summarizer_prompt(self, run_id: str, run_dir: Path, result: Dict) -> str:
@@ -1293,22 +1289,18 @@ class OpenCodeAgenticOrchestrator:
                 result = self.execute_experiment(experiment)
                 self.experiments_run += 1
 
+                # Spawn summarizer to update Insights.md
+                run_id = experiment.get("name", f"run_{self.experiments_run}")
+                self.spawn_summarizer_agent(run_id, result)
+
                 success = result.get("success", False)
                 error = result.get("error", "")
 
                 if success:
-                    bench = result.get("benchmark", {})
-                    summary = bench.get("summary", {})
-                    throughput = summary.get("avg_throughput", 0)
-                    success_rate = summary.get("success_rate", 0) * 100
-
-                    print(
-                        f"│  │  ✅ Healthy | Throughput: {throughput:.1f} tok/s | Success: {success_rate:.0f}%"
-                    )
                     print(f"│  └─ ✅ PASSED")
                 else:
                     print(
-                        f"│  │  ❌ Error: {error[:40]}{'...' if len(error) > 40 else ''}"
+                        f"│  │  ❌ Error: {str(error)[:40]}{'...' if len(str(error)) > 40 else ''}"
                     )
                     print(f"│  └─ ❌ FAILED")
 
@@ -1316,8 +1308,7 @@ class OpenCodeAgenticOrchestrator:
             print("└─ Iteration complete")
             print(f"{'━' * 60}")
 
-            # After running experiments, exit the loop
-            break
+            # Loop continues - next iteration will spawn planner again with updated history
 
         # Final summary
         self._generate_final_report()

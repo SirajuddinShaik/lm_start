@@ -20,19 +20,12 @@ This runs INSIDE the model's venv to get accurate flag definitions.
 
 import argparse
 import json
-import os
+import logging
 import sys
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
-
-def log(message: str, level: str = "info"):
-    """Print log message."""
-    prefix = "[extract_vllm_flags]"
-    if level == "error":
-        print(f"{prefix} ERROR: {message}", file=sys.stderr)
-    else:
-        print(f"{prefix} {message}")
+logger = logging.getLogger(__name__)
 
 
 def extract_engine_args() -> Dict[str, Any]:
@@ -44,7 +37,7 @@ def extract_engine_args() -> Dict[str, Any]:
     try:
         from vllm.engine.arg_utils import EngineArgs
     except ImportError as e:
-        log(f"Cannot import vLLM EngineArgs: {e}", "error")
+        logger.error(f"Cannot import vLLM EngineArgs: {e}")
         return {}
 
     # Create parser and add vLLM args
@@ -315,6 +308,71 @@ def get_profile_recommendations(
     return {k: v for k, v in recommendations.items() if k in flags}
 
 
+def extract_vllm_flags_func(
+    model_dir: str,
+    gpu_type: Optional[str] = None,
+    profile: str = "balanced",
+) -> Dict[str, Any]:
+    """Extract vLLM flags and save to model directory.
+
+    Returns:
+        Dict with 'success' and 'error' keys
+    """
+    result = {
+        "success": False,
+        "error": None,
+    }
+
+    model_dir_path = Path(model_dir)
+
+    logger.info(f"Extracting vLLM flags for {model_dir_path.name}")
+    logger.info(f"vLLM version: {get_vllm_version()}")
+
+    # Extract all EngineArgs
+    flags = extract_engine_args()
+    logger.info(f"Found {len(flags)} vLLM flags")
+
+    # Categorize
+    categories = categorize_flags(flags)
+
+    # Get OOM-relevant flags
+    oom_flags = get_oom_relevant_flags(flags)
+
+    # Get profile recommendations
+    profile_recs = get_profile_recommendations(flags, profile, gpu_type)
+
+    # Build output
+    output = {
+        "vllm_version": get_vllm_version(),
+        "extraction_time": __import__("datetime").datetime.now().isoformat(),
+        "flags": flags,
+        "categories": categories,
+        "oom_relevant_flags": oom_flags,
+        "profile_recommendations": {profile: profile_recs},
+    }
+
+    output_path = (
+        model_dir_path / ".llm-context" / "model-context" / "vllm_available_flags.json"
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w") as f:
+        json.dump(output, f, indent=2, default=str)
+
+    logger.info(f"Saved {len(flags)} flags to {output_path}")
+
+    # Print summary
+    logger.info("\nFlag Categories:")
+    for cat, flag_list in categories.items():
+        if flag_list:
+            logger.info(f"  {cat}: {len(flag_list)} flags")
+
+    logger.info(f"\nOOM-relevant flags: {len(oom_flags)}")
+    logger.info(f"Profile recommendations ({profile}): {len(profile_recs)}")
+
+    result["success"] = True
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description="Extract vLLM flags dynamically")
     parser.add_argument("model_dir", help="Model directory")
@@ -327,53 +385,15 @@ def main():
     )
     args = parser.parse_args()
 
-    model_dir = Path(args.model_dir)
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
 
-    log(f"Extracting vLLM flags for {model_dir.name}")
-    log(f"vLLM version: {get_vllm_version()}")
-
-    # Extract all EngineArgs
-    flags = extract_engine_args()
-    log(f"Found {len(flags)} vLLM flags")
-
-    # Categorize
-    categories = categorize_flags(flags)
-
-    # Get OOM-relevant flags
-    oom_flags = get_oom_relevant_flags(flags)
-
-    # Get profile recommendations
-    profile_recs = get_profile_recommendations(flags, args.profile, args.gpu_type)
-
-    # Build output
-    output = {
-        "vllm_version": get_vllm_version(),
-        "extraction_time": __import__("datetime").datetime.now().isoformat(),
-        "flags": flags,
-        "categories": categories,
-        "oom_relevant_flags": oom_flags,
-        "profile_recommendations": {args.profile: profile_recs},
-    }
-
-    output_path = (
-        model_dir / ".llm-context" / "model-context" / "vllm_available_flags.json"
+    result = extract_vllm_flags_func(
+        model_dir=args.model_dir,
+        gpu_type=args.gpu_type,
+        profile=args.profile,
     )
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, "w") as f:
-        json.dump(output, f, indent=2, default=str)
 
-    log(f"Saved {len(flags)} flags to {output_path}")
-
-    # Print summary
-    log("\nFlag Categories:")
-    for cat, flag_list in categories.items():
-        if flag_list:
-            log(f"  {cat}: {len(flag_list)} flags")
-
-    log(f"\nOOM-relevant flags: {len(oom_flags)}")
-    log(f"Profile recommendations ({args.profile}): {len(profile_recs)}")
-
-    return 0
+    return 0 if result["success"] else 1
 
 
 if __name__ == "__main__":

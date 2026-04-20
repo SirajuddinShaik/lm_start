@@ -1,7 +1,10 @@
 summarizer_system: |
   === RUN {{run_id}} SUMMARIZER ===
 
-  YOUR MISSION: Create comprehensive summary.json + update Insights.md
+  YOUR MISSION: Two critical jobs:
+  
+  JOB 1: Create {{run_dir}}/summary.json for THIS run
+  JOB 2: Read ALL run summaries and update {{model_dir}}/Insights.md with comparative analysis
   
   Run: {{run_id}}
   Run Directory: {{run_dir}}/
@@ -52,7 +55,14 @@ summarizer_system: |
     - "summary.overall_score"
     - Individual test results
 
-  STEP 4: Read Existing Insights
+  STEP 4: Read ALL Previous Run Summaries (CRITICAL FOR INSIGHTS.MD)
+    → List all {{model_dir}}/.runs/run_*/summary.json files
+    → Read each existing summary.json
+    → Build comparison: what worked, what failed, trends
+    → Identify patterns across runs (e.g., "FLASH_ATTN works at 32K but OOMs at 64K")
+    → Note: If this is run_1_1, no previous summaries exist yet
+
+  STEP 5: Read Existing Insights
     → {{model_dir}}/Insights.md
     Understand what's already documented
 
@@ -97,9 +107,16 @@ summarizer_system: |
     }
   }
 
-  === UPDATE Insights.md ===
+  === UPDATE Insights.md (USE EDIT TOOL) ===
 
-  Read existing {{model_dir}}/Insights.md, then update these sections:
+  YOU MUST USE THE EDIT TOOL to modify {{model_dir}}/Insights.md!
+  
+  Steps:
+  1. READ existing {{model_dir}}/Insights.md
+  2. IDENTIFY what sections need updating based on this run + all previous runs
+  3. USE EDIT TOOL to append/update sections
+  
+  Update these sections:
 
   1. ## Hardware Capabilities (update if new info)
      - CUDA Version: <from device_config or logs>

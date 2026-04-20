@@ -209,7 +209,6 @@ class OpenCodeAgenticOrchestrator:
             else:
                 print(f"[WARN] Could not identify process using port {target_port}")
         else:
-            print(f"[DEBUG] Port {target_port} is free, no processes to kill")
             return killed
 
         for pid in pids_to_kill:
@@ -624,11 +623,11 @@ class OpenCodeAgenticOrchestrator:
                     else "Performance: completed"
                 )
             elif error:
-                lines.append(
-                    f"Error: {error[:100]}..."
-                    if len(str(error)) > 100
-                    else f"Error: {error}"
-                )
+                error_str = str(error)
+                if len(error_str) > 100:
+                    lines.append(f"Error: {error_str[:100]}...")
+                else:
+                    lines.append(f"Error: {error_str}")
 
             lines.append(
                 f"Result: {'Working config found' if success else 'Failed - see error above'}"
@@ -708,19 +707,8 @@ class OpenCodeAgenticOrchestrator:
 
         config["port"] = port
 
-        print(f"[DEBUG] execute_experiment started for {run_id}")
-        print(f"\n[STEP 1/4] Preparing experiment environment...")
-        print(f"           Port {port}: checking if in use...")
-        print(f"[DEBUG] Killing existing vLLM processes on port {port}...")
+        print(f"│  │  🚀 Phase 1/3: Starting vLLM on port {port}...")
         self._kill_existing_vllm(target_port=port)
-        print(f"[DEBUG] Existing processes killed")
-
-        print(f"[STEP 2/4] Testing vLLM health check...")
-
-        print(f"\n" + "=" * 60)
-        print(f"EXECUTING EXPERIMENT: {run_name} (ID: {run_id})")
-        print("=" * 60)
-        print(f"[DEBUG] Using profile: {experiment.get('profile', 'balanced')}")
 
         # Apply profile if specified
         profile = experiment.get("profile", "balanced")
@@ -779,7 +767,6 @@ class OpenCodeAgenticOrchestrator:
         print(f"│  │  🟢 Starting vLLM for {run_name} (waiting for health check)...")
 
         try:
-            print(f"[DEBUG] Spawning vLLM process on port {port}...")
             print(f"│  │  🚀 vLLM starting...")
 
             stdout_log = open(run_dir / "vllm_stdout.log", "w")
@@ -795,7 +782,6 @@ class OpenCodeAgenticOrchestrator:
                 bufsize=1,
             )
 
-            print(f"[DEBUG] vLLM process started with PID: {process.pid}")
             print(f"│  │  📋 Streaming vLLM output...")
 
             import threading
@@ -945,7 +931,6 @@ class OpenCodeAgenticOrchestrator:
         start = time.time()
         url = f"http://localhost:{port}/health"
 
-        print(f"[DEBUG] _wait_for_health starting for port {port}")
         print(f"Waiting for vLLM health check at {url} (timeout: {timeout}s)...")
 
         check_count = 0
@@ -961,7 +946,6 @@ class OpenCodeAgenticOrchestrator:
             if process.poll() is not None:
                 # Process died - read logs
                 print(f"✗ vLLM process died (exit code: {process.returncode})")
-                print(f"[DEBUG] Process exited at {time.time() - start:.1f}s")
                 return False
 
             try:
@@ -969,7 +953,6 @@ class OpenCodeAgenticOrchestrator:
                 if response.status_code == 200:
                     elapsed = time.time() - start
                     print(f"✓ vLLM healthy after {elapsed:.1f}s")
-                    print(f"[DEBUG] Health check passed on attempt {check_count}")
                     return True
             except Exception as e:
                 if check_count == 1:
@@ -979,7 +962,6 @@ class OpenCodeAgenticOrchestrator:
             time.sleep(5)
 
         print(f"✗ Health check timeout after {timeout}s")
-        print(f"[DEBUG] Timeout after {check_count} attempts")
         return False
 
     def _run_benchmark(self, port: int, run_dir: Path, config: Dict) -> Dict[str, Any]:
@@ -1295,6 +1277,10 @@ class OpenCodeAgenticOrchestrator:
 
                 result = self.execute_experiment(experiment)
                 self.experiments_run += 1
+
+                run_id = experiment.get("name", f"run_{self.experiments_run}")
+                print(f"│  │  📝 Summarizing run {run_id}...")
+                self.spawn_summarizer_agent(run_id, result)
 
                 success = result.get("success", False)
                 error = result.get("error", "")

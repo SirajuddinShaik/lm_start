@@ -185,6 +185,15 @@ def find_all_sessions(lmstart_only: bool = True) -> list:
                         continue
                     sessions.append(s)
 
+    # Deduplicate: keep only the most recent entry for each session_id
+    seen_ids = {}
+    for s in sessions:
+        sid = s.get("session_id", "")
+        ts = s.get("timestamp", "")
+        if sid not in seen_ids or ts > seen_ids[sid].get("timestamp", ""):
+            seen_ids[sid] = s
+
+    sessions = list(seen_ids.values())
     sessions.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
     return sessions
 
@@ -494,9 +503,16 @@ def sync_sessions(
     models_base = get_models_base()
     known_models = {}
     for model_dir in models_base.iterdir():
-        if model_dir.is_dir() and (model_dir / ".llm-context" / "model-context" / "model_info.json").exists():
+        if (
+            model_dir.is_dir()
+            and (
+                model_dir / ".llm-context" / "model-context" / "model_info.json"
+            ).exists()
+        ):
             try:
-                with open(model_dir / ".llm-context" / "model-context" / "model_info.json") as f:
+                with open(
+                    model_dir / ".llm-context" / "model-context" / "model_info.json"
+                ) as f:
                     info = json.load(f)
                 model_id = info.get("model_id", "")
                 known_models[model_dir.name] = model_id

@@ -1,0 +1,203 @@
+# lm_start - Unified System Configuration
+# Single source of truth for all device and deployment settings
+
+system:
+  name: "lm_start"
+  version: "2.0.0"
+  base_dir: "/data/models"
+  max_retries: 5
+  phase_timeout: 1800
+  experiment_timeout: 600
+
+# Device-specific configuration (auto-detected or manually set)
+device:
+  name: "h200-cluster"
+  description: "8x NVIDIA H200 GPU cluster"
+
+  gpu:
+    count: 4
+    names: ["NVIDIA H200"]
+    memory_gb: 141
+    visible_devices: "0,1,2,3"
+    compute_capability: "9.0"
+
+  cuda:
+    version: "12.9"
+    home: "/usr/local/cuda-12.9"
+    driver_version: "575.57.08"
+
+  system_ram_gb: 512
+  cpu_count: 64
+
+# Path configuration
+paths:
+  hf_home: "/data/.cache/huggingface"
+  models_base: "/data/models"
+  logs_base: "/data/.cache/lm_start/logs"
+  temp: "/tmp"
+
+# Environment variables for all operations
+environment:
+  # CUDA/GPU
+  CUDA_HOME: "/usr/local/cuda-12.9"
+  CUDA_VISIBLE_DEVICES: "0,1,2,3"
+  LD_LIBRARY_PATH: "/usr/local/cuda-12.9/lib64:/usr/lib/x86_64-linux-gnu"
+  
+  # HuggingFace
+  HF_HOME: "/data/.cache/huggingface"
+  
+  # vLLM
+  VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
+  VLLM_WORKER_MULTIPROC_METHOD: "spawn"
+  
+  # PyTorch
+  TORCH_CUDA_MATMUL_PRECISION: "high"
+  PYTHONHASHSEED: "0"
+  
+  # Monitoring
+  PROMETHEUS_MULTIPROC_DIR: "/tmp/vllm_prometheus_multiproc"
+
+# vLLM default configuration
+vllm_defaults:
+  host: "0.0.0.0"
+  port: 8000
+  gpu_memory_utilization: 0.9
+  max_model_len: 4096
+  tensor_parallel_size: 8
+  dtype: "auto"
+  trust_remote_code: true
+  enforce_eager: false
+  enable_prefix_caching: true
+  enable_auto_tool_choice: true
+  tool_call_parser: "auto"
+  quantization: null
+  max_num_seqs: null
+
+# PM2 configuration
+pm2:
+  log_date_format: "YYYY-MM-DD HH:mm:ss Z"
+  max_restarts: 10
+  restart_delay: 5000
+  kill_timeout: 60000
+  listen_timeout: 300000
+  min_uptime: "10s"
+  log_max_size: "100M"
+
+# Monitoring settings
+monitoring:
+  health_check_interval: 5
+  startup_timeout: 1800  # 30 minutes for large model loading
+  max_experiment_time: 3600  # 60 minutes for full experiment
+  health_endpoint: "/health"
+
+# Experiment settings
+experiment:
+  max_runs: 20
+  context_targets: [8192, 16384, 32768, 65536, 131072]
+  test_port_range: [8001, 9000]
+  # Expectation prompt: describes what "solved" means for this model
+  # Agent uses this to intelligently decide when to stop experimenting
+  expectation: "Find the best context length and attention backend combination that achieves at least 32768 tokens context without OOM errors. Test FLASHINFER, FLASH_ATTN, FLASH_ATTN_VLLM_V1, XFORMERS, and TORCH_SDPA backends. Prioritize the backend with highest tokens/sec at 32768 context or above. Stop only when 32768 is achieved and stable."
+  # Attention backends to test (in priority order)
+  attention_backends: ["FLASHINFER", "FLASH_ATTN", "FLASH_ATTN_VLLM_V1", "XFORMERS", "TORCH_SDPA"]
+  # Venv management settings
+  venv:
+    base_path: ".venv"  # Base venv to copy from
+    per_run: true       # Create isolated venv per run
+    reuse_on_success: true  # Reuse venv if previous run succeeded
+    cleanup_failed: false   # Keep failed venvs for debugging
+
+# Benchmark settings
+benchmark:
+  enabled: true  # Set to false to disable benchmarking
+  backend: openai
+  host: localhost
+  port: 8000
+  endpoint: /v1/completions
+  dataset_name: random
+  random_input_len: 32000
+  random_output_len: 1000
+  num_prompts: 100
+  request_rate: 32
+  # Additional benchmark parameters can be added here
+
+# Smoke test settings (venv validation)
+smoke_test:
+  enabled: true
+  vllm_args:
+    max_model_len: 1024
+    tensor_parallel_size: 1
+    dtype: "auto"
+    trust_remote_code: true
+    enable_chunked_prefill: true
+    enforce_eager: false
+  timeout_seconds: 1800  # 30 minutes
+  poll_interval_seconds: 2
+  max_retries: 3
+  start_port: 8000
+  end_port: 9000
+
+# LLM configuration for agentic recovery
+llm:
+  model: "Grid/kimi-latest"
+  timeout: 300
+  temperature: 0.7
+  max_tokens: 2048
+
+# Setup phases configuration
+phases:
+  order:
+    - init
+    - fetch_info
+    - download
+    - venv
+    - generate_config
+    - optimize
+    - finalize
+  
+  init:
+    description: "Initialize model directory and state"
+    required: true
+  
+  fetch_info:
+    description: "Fetch model metadata from HuggingFace"
+    required: true
+  
+  download:
+    description: "Download model weights"
+    required: false
+    skippable: true
+  
+  venv:
+    description: "Create virtual environment and install dependencies"
+    required: true
+    python_version: "3.12"
+    vllm_version: "latest"
+  
+  generate_config:
+    description: "Generate PM2 and management scripts"
+    required: true
+  
+  optimize:
+    description: "Optimize vLLM configuration"
+    required: false
+    modes: ["auto", "research"]
+  
+  finalize:
+    description: "Create documentation and finalize"
+    required: true
+
+# Error recovery settings
+recovery:
+  enabled: true
+  auto_retry: true
+  use_llm: true
+  max_llm_attempts: 5
+  strategies:
+    - reduce_context
+    - reduce_tensor_parallel
+    - enable_eager
+    - change_dtype
+    - adjust_memory_util
+
+

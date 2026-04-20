@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 
 from .base import BaseAgent, AgentResult, AgentStatus, FixStrategy
-from utils.prompt_manager import get_prompt
+from lm_start.utils.prompt_manager import get_prompt
 
 
 class PhaseAgent(BaseAgent):

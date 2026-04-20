@@ -16,7 +16,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 
 
 def get_hf_home() -> str:
@@ -33,7 +33,9 @@ class PM2Deployer:
 
     def _get_model_id(self) -> str:
         """Get model ID from model_info.json."""
-        info_file = self.model_dir / ".llm-context" / "model-context" / "model_info.json"
+        info_file = (
+            self.model_dir / ".llm-context" / "model-context" / "model_info.json"
+        )
         if info_file.exists():
             with open(info_file) as f:
                 return json.load(f).get("model_id", "unknown")
@@ -43,7 +45,9 @@ class PM2Deployer:
         return self.model_id.replace("/", "_").replace("-", "_").lower()
 
     def _get_visible_devices(self) -> str:
-        device_config_file = self.model_dir / ".llm-context" / "model-context" / "device_config.json"
+        device_config_file = (
+            self.model_dir / ".llm-context" / "model-context" / "device_config.json"
+        )
         if device_config_file.exists():
             try:
                 with open(device_config_file) as f:
@@ -351,6 +355,41 @@ class PM2Deployer:
         print("  ./deploy.py start quality    # Start with quality profile")
 
 
+def deploy_model(
+    model_dir: str, command: str, profile: str = "balanced", lines: int = 100
+) -> Dict[str, Any]:
+    """Deploy model using PM2.
+
+    Returns:
+        Dict with 'success' and 'error' keys
+    """
+    result = {
+        "success": False,
+        "error": None,
+    }
+
+    deployer = PM2Deployer(model_dir)
+
+    try:
+        if command == "start":
+            deployer.start(profile)
+        elif command == "stop":
+            deployer.stop(profile)
+        elif command == "restart":
+            deployer.restart(profile)
+        elif command == "status":
+            deployer.status()
+        elif command == "logs":
+            deployer.logs(profile, lines)
+        elif command == "list":
+            deployer.list_profiles()
+        result["success"] = True
+    except Exception as e:
+        result["error"] = str(e)
+
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="PM2 Deployment Manager for vLLM Models",
@@ -394,24 +433,12 @@ Examples:
 
     args = parser.parse_args()
 
-    # Get model directory (current directory or from env)
-    model_dir = Path.cwd()
+    model_dir = str(Path.cwd())
 
-    deployer = PM2Deployer(str(model_dir))
+    result = deploy_model(model_dir, args.command, args.profile, args.lines)
 
-    if args.command == "start":
-        deployer.start(args.profile)
-    elif args.command == "stop":
-        deployer.stop(args.profile)
-    elif args.command == "restart":
-        deployer.restart(args.profile)
-    elif args.command == "status":
-        deployer.status()
-    elif args.command == "logs":
-        deployer.logs(args.profile, args.lines)
-    elif args.command == "list":
-        deployer.list_profiles()
+    return 0 if result["success"] else 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

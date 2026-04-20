@@ -155,9 +155,14 @@ class UnifiedConfig:
             config_path: Path to system.yaml. If None, uses default location.
         """
         if config_path is None:
-            # Find config relative to this file
-            base_dir = Path(__file__).parent.parent
-            config_path = base_dir / "config" / "system.yaml"
+            # Check user config first, then package config
+            user_config = Path.home() / ".lm-start" / "config" / "system.yaml"
+            if user_config.exists():
+                config_path = user_config
+            else:
+                # Find config relative to this file
+                base_dir = Path(__file__).parent.parent
+                config_path = base_dir / "config" / "system.yaml"
 
         self._config_path = Path(config_path)
         self._raw_config: Dict[str, Any] = {}
@@ -219,9 +224,37 @@ class UnifiedConfig:
         """Get environment variables."""
         return self._raw_config["environment"].copy()
 
-    def get_env_dict(self) -> Dict[str, str]:
+    def get_env_dict(self, model_venv_path: Optional[str] = None) -> Dict[str, str]:
         """Get environment variables as dict for subprocess calls."""
         env = os.environ.copy()
+
+        # If model venv specified, override VIRTUAL_ENV and PATH
+        # to prevent inheriting wrong venv from parent shell
+        if model_venv_path:
+            env["VIRTUAL_ENV"] = model_venv_path
+            # Update PATH to put model venv first
+            original_path = env.get("PATH", "")
+            venv_bin = str(Path(model_venv_path) / "bin")
+            # Remove any existing venv paths from PATH
+            path_parts = [
+                p
+                for p in original_path.split(":")
+                if ".venv" not in p and "venv" not in p.lower()
+            ]
+            env["PATH"] = venv_bin + ":" + ":".join(path_parts)
+
+        # Set cache dirs to temp locations to prevent cross-venv contamination
+        import tempfile
+        cache_base = tempfile.gettempdir()
+        env["NUMBA_CACHE_DIR"] = f"{cache_base}/numba_cache"
+        env["TRITON_CACHE_DIR"] = f"{cache_base}/triton_cache"
+        env["TORCHINDUCTOR_CACHE_DIR"] = f"{cache_base}/torch_inductor_cache"
+        env["FLASHINFER_DISABLE_JIT"] = "1"
+        env["CUDA_MODULE_LOADING"] = "LAZY"
+        env["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
+        # Disable flashinfer all-reduce (falls back to NCCL)
+        env["VLLM_USE_FLASHINFER_ALLREDUCE"] = "0"
+
         env.update(self.environment)
         return env
 

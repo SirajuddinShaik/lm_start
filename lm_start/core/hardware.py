@@ -5,6 +5,7 @@ Provides GPU detection, CUDA verification, and memory calculations.
 Consolidates functionality from gpu_detector.py and dgx_spark_detector.py
 """
 
+import os
 import re
 import subprocess
 from dataclasses import dataclass
@@ -88,8 +89,18 @@ class HardwareDetector:
         return self._hardware_info
 
     def _detect_gpus(self) -> List[GPUInfo]:
-        """Detect GPUs using nvidia-smi."""
+        """Detect GPUs using nvidia-smi. Respects CUDA_VISIBLE_DEVICES if set."""
         gpus = []
+        
+        # Check if CUDA_VISIBLE_DEVICES is set
+        visible_devices_str = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+        visible_indices = None
+        if visible_devices_str:
+            try:
+                visible_indices = [int(x.strip()) for x in visible_devices_str.split(",")]
+                print(f"[INFO] Using CUDA_VISIBLE_DEVICES: {visible_indices}")
+            except ValueError:
+                print(f"[WARN] Invalid CUDA_VISIBLE_DEVICES: {visible_devices_str}")
 
         try:
             # Get GPU details
@@ -107,9 +118,13 @@ class HardwareDetector:
             for line in result.stdout.strip().split("\n"):
                 parts = line.split(", ")
                 if len(parts) >= 5:
+                    gpu_index = int(parts[0])
+                    # Skip if CUDA_VISIBLE_DEVICES is set and this GPU is not in the list
+                    if visible_indices is not None and gpu_index not in visible_indices:
+                        continue
                     gpus.append(
                         GPUInfo(
-                            index=int(parts[0]),
+                            index=gpu_index,
                             name=parts[1].strip(),
                             memory_total_mb=int(parts[2]),
                             memory_used_mb=int(parts[3]),

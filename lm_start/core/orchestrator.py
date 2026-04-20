@@ -7,11 +7,11 @@ import sys
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
-from agents.phase_agent import PhaseAgent
-from agents.experiment_agent import ExperimentAgent
-from agents.experiment_agent_v2 import ExperimentAgentV2
-from core.config import get_config
-from utils.logger import get_logger
+from lm_start.agents.phase_agent import PhaseAgent
+from lm_start.agents.experiment_agent import ExperimentAgent
+from lm_start.agents.experiment_agent_v2 import ExperimentAgentV2
+from lm_start.core.config import get_config
+from lm_start.utils.logger import get_logger
 
 
 class Orchestrator:

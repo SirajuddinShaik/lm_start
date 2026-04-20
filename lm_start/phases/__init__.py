@@ -11,13 +11,14 @@ import time
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
-_package_dir = Path(__file__).parent.parent.parent
-if str(_package_dir) not in sys.path:
-    sys.path.insert(0, str(_package_dir))
+from lm_start.state_manager import StateManager, Phase, PhaseStatus, PHASE_ORDER
 
-from state_manager import StateManager, Phase, PhaseStatus, PHASE_ORDER
+# Import script modules for direct execution (pip package compatible)
+from lm_start.scripts.fetch_model_info import fetch_model_info_func
+from lm_start.scripts.download_model import download_model_func
+from lm_start.scripts.extract_vllm_flags import extract_vllm_flags_func
 
-SCRIPT_DIR = Path(__file__).parent.parent.parent
+SCRIPT_DIR = Path(__file__).parent.parent / "scripts"
 
 
 def get_credentials_env():
@@ -36,7 +37,10 @@ def get_credentials_env():
 
 def get_config_value(key: str = "", default: Any = None) -> Any:
     try:
-        system_config_path = SCRIPT_DIR / "config" / "system.yaml"
+        # Check user config first, then package config
+        user_config = Path.home() / ".lm-start" / "config" / "system.yaml"
+        package_config = SCRIPT_DIR / "config" / "system.yaml"
+        system_config_path = user_config if user_config.exists() else package_config
         if system_config_path.exists():
             import yaml
 
@@ -150,33 +154,37 @@ def phase_init(
         model_path.mkdir(parents=True, exist_ok=True)
         (model_path / "logs").mkdir(exist_ok=True)
 
-        # Create detailed device_config.json like shell script
-        system_config = get_config_value("", {})
-        device = system_config.get("device", {})
+        # Create detailed device_config.json using actual hardware detection
+        from lm_start.core.hardware import HardwareDetector
+        
+        detector = HardwareDetector()
+        hw_info = detector.detect()
+        
+        import psutil
+        cpu_count = psutil.cpu_count(logical=False) or psutil.cpu_count() or 64
+        total_ram_gb = psutil.virtual_memory().total / (1024**3)
+        
         device_config = {
-            "device_name": device.get("name", "unknown"),
-            "description": device.get("description", ""),
+            "device_name": "Auto-Detected",
+            "description": f"{hw_info.gpu_count}x {hw_info.gpus[0].name if hw_info.gpus else 'No GPU'}" if hw_info.gpus else "No GPU detected",
             "cuda": {
-                "version": device.get("cuda", {}).get("version", "12.9"),
-                "home": device.get("cuda", {}).get("home", "/usr/local/cuda-12.9"),
+                "version": hw_info.cuda_version or "unknown",
+                "home": "/usr/local/cuda" if hw_info.cuda_version else "",
             },
             "gpus": {
-                "visible_devices": device.get("gpu", {}).get("visible_devices", "0"),
-                "count": device.get("gpu", {}).get("count", 1),
-                "names": device.get("gpu", {}).get("names", []),
-                "memory_gb_per_gpu": device.get("gpu", {}).get("memory_gb", 80),
-                "total_memory_gb": device.get("gpu", {}).get("count", 1)
-                * device.get("gpu", {}).get("memory_gb", 80),
-                "compute_capability": device.get("gpu", {}).get(
-                    "compute_capability", "9.0"
-                ),
+                "visible_devices": hw_info.visible_devices,
+                "count": hw_info.gpu_count,
+                "names": [gpu.name for gpu in hw_info.gpus],
+                "memory_gb_per_gpu": round(hw_info.gpus[0].memory_total_gb, 1) if hw_info.gpus else 0,
+                "total_memory_gb": round(hw_info.total_vram_gb, 1),
+                "compute_capability": hw_info.gpus[0].compute_capability if hasattr(hw_info.gpus[0], 'compute_capability') else "9.0" if hw_info.gpus else "",
             },
             "system": {
-                "total_ram_gb": device.get("system_ram_gb", 512),
-                "cpu_count": device.get("cpu_count", 64),
+                "total_ram_gb": round(total_ram_gb, 1),
+                "cpu_count": cpu_count,
             },
-            "paths": system_config.get("paths", {}),
-            "environment": system_config.get("environment", {}),
+            "paths": {},
+            "environment": {},
         }
         device_config_path = (
             model_path / ".llm-context" / "model-context" / "device_config.json"
@@ -202,9 +210,6 @@ def phase_fetch_info(
 ):
     if runner and runner.get_phase_status(Phase.FETCH_INFO) == PhaseStatus.COMPLETED:
         return PhaseResult(True, "Phase already completed")
-    fetch_script = SCRIPT_DIR / "fetch_model_info.py"
-    if not fetch_script.exists():
-        return PhaseResult(False, "fetch_model_info.py not found")
     if dry_run:
         return PhaseResult(True, "Dry run - would fetch model info")
     if runner:
@@ -216,16 +221,20 @@ def phase_fetch_info(
         Path(model_dir) / ".llm-context" / "model-context" / "model_info.json"
     )
     model_info_file.parent.mkdir(parents=True, exist_ok=True)
-    result = run_script(
-        fetch_script, [model_id, "-o", str(model_info_file), "--hf-home", hf_home]
+    result = fetch_model_info_func(
+        hf_url=model_id,
+        output_file=str(model_info_file),
+        hf_home=hf_home,
     )
-    if result.returncode != 0:
+
+    if not result_data.get("success", False):
+        error_msg = result_data.get("error", "Unknown error")
         if runner:
-            runner.fail_phase(Phase.FETCH_INFO, result.stderr)
-        return PhaseResult(False, f"Failed to fetch model info: {result.stderr}")
+            runner.fail_phase(Phase.FETCH_INFO, error_msg)
+        return PhaseResult(False, f"Failed to fetch model info: {error_msg}")
+
     try:
-        with open(model_info_file) as f:
-            model_info = json.load(f)
+        model_info = result.get("model_info", {})
         if not model_info.get("vllm_compatible", True):
             if runner:
                 runner.complete_phase(Phase.FETCH_INFO)
@@ -251,9 +260,6 @@ def phase_download(
         return PhaseResult(True, "Phase already completed")
     if runner and runner.get_phase_status(Phase.DOWNLOAD) == PhaseStatus.SKIPPED:
         return PhaseResult(True, "Phase skipped")
-    download_script = SCRIPT_DIR / "download_model.py"
-    if not download_script.exists():
-        return PhaseResult(False, "download_model.py not found")
     if dry_run:
         return PhaseResult(True, "Dry run - would download model")
     if runner:
@@ -261,23 +267,31 @@ def phase_download(
     hf_home = get_config_value(
         "paths.hf_home", os.path.expanduser("~/.cache/huggingface")
     )
-    args = [model_id, "--model-dir", model_dir, "--hf-home", hf_home]
-    if (Path(model_dir) / ".resume_download").exists():
-        args.append("--resume")
-    result = run_script(download_script, args)
-    if result.returncode != 0:
-        error_msg = f"Download failed for {model_id}"
+
+    # Use direct function call instead of subprocess
+    result = download_model_func(
+        model_id=model_id,
+        model_dir=model_dir,
+        hf_home=hf_home,
+    )
+
+    if not result_data.get("success", False):
+        error_msg = result.get("error", f"Download failed for {model_id}")
         print("[INFO] Attempting agentic recovery for download...")
         if run_agentic_recovery(model_dir, "download", error_msg):
             print("[INFO] OpenCode agent recovery succeeded, retrying download...")
-            result = run_script(download_script, args)
-            if result.returncode == 0:
+            retry_result = download_model_func(
+                model_id=model_id,
+                model_dir=model_dir,
+                hf_home=hf_home,
+            )
+            if retry_result.get("success", False):
                 if runner:
                     runner.complete_phase(Phase.DOWNLOAD)
                 return PhaseResult(True, "Model downloaded after agent fix")
         if runner:
-            runner.fail_phase(Phase.DOWNLOAD, result.stderr)
-        return PhaseResult(False, f"Download failed: {result.stderr}")
+            runner.fail_phase(Phase.DOWNLOAD, error_msg)
+        return PhaseResult(False, f"Download failed: {error_msg}")
     if runner:
         runner.complete_phase(Phase.DOWNLOAD)
     return PhaseResult(True, "Model downloaded successfully")
@@ -600,39 +614,64 @@ def phase_extract_vllm_config(
     if runner:
         runner.start_phase(Phase.EXTRACT_VLLM_CONFIG)
 
-    extract_script = SCRIPT_DIR / "extract_vllm_config.py"
-    if not extract_script.exists():
-        return PhaseResult(False, "extract_vllm_config.py not found")
-    python_exec = venv_path / "bin" / "python"
+    # Use model's venv Python for extraction
+    venv_python = Path(model_dir) / ".venv" / "bin" / "python"
+    if not venv_python.exists():
+        error_msg = f"venv Python not found: {venv_python}"
+        print(f"[ERROR] {error_msg}")
+        if runner:
+            runner.fail_phase(Phase.EXTRACT_VLLM_CONFIG, error_msg)
+        return PhaseResult(False, error_msg)
+    
     hf_home = get_config_value("paths.hf_home", "/data/.cache/huggingface")
+    
+    # Run extraction in model's venv using subprocess
+    import subprocess
+    import json
+    
+    extract_script = SCRIPT_DIR / "extract_vllm_config.py"
     result = subprocess.run(
-        [str(python_exec), str(extract_script), model_dir, "--max-model-len", "1024"],
+        [str(venv_python), str(extract_script), model_dir, "--max-model-len", "1024", "--json"],
         capture_output=True,
         text=True,
-        env={**os.environ, **get_credentials_env(), "HF_HOME": hf_home},
+        env={**os.environ, "HF_HOME": hf_home},
     )
-
+    
     if result.returncode != 0:
-        print(f"[ERROR] vLLM config extraction failed: {result.stderr[:200]}...")
+        error_msg = result.stderr or "Extraction failed"
+        print(f"[ERROR] vLLM config extraction failed: {error_msg[:200]}...")
+        if runner:
+            runner.fail_phase(Phase.EXTRACT_VLLM_CONFIG, error_msg)
+        return PhaseResult(False, f"Extraction failed: {error_msg[:200]}")
+    
+    try:
+        result_data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        error_msg = "Failed to parse extraction output"
+        print(f"[ERROR] {error_msg}")
+        if runner:
+            runner.fail_phase(Phase.EXTRACT_VLLM_CONFIG, error_msg)
+        return PhaseResult(False, error_msg)
+
+    if not result_data.get("success", False):
+        error_msg = result_data.get("error", "Unknown error")
+        print(f"[ERROR] vLLM config extraction failed: {error_msg[:200]}...")
         print("[INFO] Agentic recovery will attempt to fix this...")
         if runner:
-            runner.fail_phase(Phase.EXTRACT_VLLM_CONFIG, result.stderr)
-        return PhaseResult(False, f"Extraction failed: {result.stderr[:200]}")
+            runner.fail_phase(Phase.EXTRACT_VLLM_CONFIG, error_msg)
+        return PhaseResult(False, f"Extraction failed: {error_msg[:200]}")
 
-    # FIX 3: Also extract vLLM flags (like shell script)
-    flags_script = SCRIPT_DIR / "extract_vllm_flags.py"
-    if flags_script.exists():
-        print("[INFO] Extracting available vLLM flags...")
-        flags_result = subprocess.run(
-            [str(python_exec), str(flags_script), model_dir, "--profile", "balanced"],
-            capture_output=True,
-            text=True,
-            env={**os.environ, **get_credentials_env()},
-        )
-        if flags_result.returncode != 0:
-            print(f"[WARN] vLLM flag extraction failed: {flags_result.stderr[:100]}")
-        else:
-            print("[OK] vLLM flags extracted successfully")
+    # Also extract vLLM flags (like shell script)
+    print("[INFO] Extracting available vLLM flags...")
+    flags_result = extract_vllm_flags_func(
+        model_dir=model_dir,
+        profile="balanced",
+    )
+    if not flags_result.get("success", False):
+        error_msg = flags_result.get("error", "Unknown error")
+        print(f"[WARN] vLLM flag extraction failed: {error_msg[:100]}")
+    else:
+        print("[OK] vLLM flags extracted successfully")
 
     sys.path.insert(0, str(SCRIPT_DIR))
     from utils.model_utils import get_model_cache_path
@@ -711,22 +750,22 @@ def phase_generate_config(
     if runner:
         runner.start_phase(Phase.GENERATE_CONFIG)
 
+    from lm_start.scripts.generate_pm2_config import generate_pm2_config_func
+    from lm_start.scripts.generate_model_sh import generate_model_sh_func
+
     # Generate PM2 config
-    pm2_script = SCRIPT_DIR / "generate_pm2_config.py"
-    if pm2_script.exists():
-        result = run_script(pm2_script, [model_dir])
-        # FIX 4: Continue on error (like shell script)
-        if result.returncode != 0:
-            print(f"[WARN] Failed to generate PM2 config: {result.stderr[:100]}")
-            print("[INFO] Continuing anyway...")
+    result = generate_pm2_config_func(model_dir=model_dir)
+    if not result.get("success", False):
+        error_msg = result.get("error", "Unknown error")
+        print(f"[WARN] Failed to generate PM2 config: {error_msg[:100]}")
+        print("[INFO] Continuing anyway...")
 
     # Generate model.sh script
-    model_sh_script = SCRIPT_DIR / "generate_model_sh.py"
-    if model_sh_script.exists():
-        result = run_script(model_sh_script, [model_dir])
-        if result.returncode != 0:
-            print(f"[WARN] Failed to generate model.sh: {result.stderr[:100]}")
-            print("[INFO] Continuing anyway...")
+    result = generate_model_sh_func(model_dir=model_dir)
+    if not result.get("success", False):
+        error_msg = result.get("error", "Unknown error")
+        print(f"[WARN] Failed to generate model.sh: {error_msg[:100]}")
+        print("[INFO] Continuing anyway...")
 
     # Make model.sh executable
     model_sh = Path(model_dir) / "model.sh"
@@ -759,17 +798,11 @@ def phase_optimize(
     if runner:
         runner.start_phase(Phase.OPTIMIZE)
 
-    optimize_script = SCRIPT_DIR / "optimize_vllm_config.py"
-    if not optimize_script.exists():
-        return PhaseResult(False, "optimize_vllm_config.py not found")
-
-    args = ["--model-dir", model_dir, "--verbose"]
-    if agentic:
-        args.append("--agentic")
+    from lm_start.scripts.optimizer import optimize_vllm_config
 
     max_attempts = 3
     attempt = 0
-    result = None
+    last_error = None
 
     print("\n" + "━" * 60)
     print("🔬 OPTIMIZATION PHASE")
@@ -780,9 +813,16 @@ def phase_optimize(
         print(f"\n┌─ Optimization Attempt {attempt}/{max_attempts}")
         print("│")
 
-        result = run_script(optimize_script, args)
+        result = optimize_vllm_config(
+            model_dir=model_dir,
+            min_context=8192,
+            max_iterations=3,
+            force=force,
+            verbose=True,
+            agentic=agentic,
+        )
 
-        if result.returncode == 0:
+        if result.get("success", False):
             print("│")
             print("│  ✅ Optimization successful!")
             print("│")
@@ -795,10 +835,23 @@ def phase_optimize(
         print(f"│")
         print(f"│  ⚠️  Attempt {attempt} failed")
 
+        last_error = result.get("error", "Unknown error")
+        error_preview = str(last_error)[-500:] if last_error else "No error output"
+        print(f"│")
+        print(f"│  📋 Error details:")
+        for line in error_preview.split("\n")[-5:]:
+            if line.strip():
+                print(f"│    {line[:70]}{'...' if len(line) > 70 else ''}")
+        print(f"│")
+        print(
+            f"│  🔍 Run: cat /data/models/*/google-gemma-4-31B-it/.runs/run_*/result.json"
+        )
+
+        # Agent failure - try recovery
         if attempt < max_attempts:
             print("│")
             print("│  🔄 Running agentic recovery...")
-            if run_agentic_recovery(model_dir, "optimize", result.stderr[:1000]):
+            if run_agentic_recovery(model_dir, "optimize", str(last_error)[:1000]):
                 print("│  ✅ Recovery succeeded, retrying...")
             else:
                 print("│  ❌ Recovery failed, stopping retries")

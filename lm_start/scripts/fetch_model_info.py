@@ -6,6 +6,7 @@ Determines compatible vLLM/Python/PyTorch versions and special requirements.
 
 import argparse
 import json
+import logging
 import re
 import sys
 from dataclasses import dataclass, asdict
@@ -17,6 +18,10 @@ try:
 except ImportError:
     print("ERROR: requests library required. Install with: pip install requests")
     sys.exit(1)
+
+
+# Setup logging
+logger = logging.getLogger(__name__)
 
 
 # Model architecture mappings
@@ -240,18 +245,18 @@ def fetch_hf_model_info(model_id: str) -> tuple:
         return response.json(), False
     except requests.exceptions.HTTPError as e:
         if response.status_code == 404:
-            print(f"ERROR: Model '{model_id}' not found on HuggingFace")
+            logger.error(f"Model '{model_id}' not found on HuggingFace")
         elif response.status_code == 401:
-            print(
-                f"ERROR: Model '{model_id}' requires authentication. Set HF_TOKEN env var."
+            logger.error(
+                f"Model '{model_id}' requires authentication. Set HF_TOKEN env var."
             )
-            sys.exit(1)
+            raise
         else:
-            print(f"ERROR: HTTP {response.status_code}: {e}")
-        sys.exit(1)
+            logger.error(f"HTTP {response.status_code}: {e}")
+        raise
     except requests.exceptions.RequestException as e:
-        print(f"ERROR: Failed to fetch model info: {e}")
-        sys.exit(1)
+        logger.error(f"Failed to fetch model info: {e}")
+        raise
 
 
 def estimate_download_size(model_data: dict) -> Optional[float]:
@@ -281,17 +286,17 @@ def is_gguf_model(model_id: str, model_data: dict) -> bool:
     model_name_lower = model_id.lower()
     if "gguf" in model_name_lower:
         return True
-    
+
     siblings = model_data.get("siblings", [])
     for sibling in siblings:
         filename = sibling.get("rfilename", "").lower()
         if filename.endswith(".gguf"):
             return True
-    
+
     tags = model_data.get("tags", [])
     if "gguf" in [t.lower() for t in tags]:
         return True
-    
+
     return False
 
 
@@ -299,8 +304,8 @@ def estimate_parameters(model_id: str, model_data: dict) -> Optional[str]:
     """Estimate parameter count from model name or siblings."""
     # Check model name for parameter hints
     param_patterns = [
-        (r"[-_]?(\d+)[bB](?:[-_]|$)", lambda m: f"{m.group(1)}B"),
-        (r"[-_]?(\d+)[mM](?:[-_]|$)", lambda m: f"{m.group(1)}M"),
+        (r"[-_]*(\d+)[bB](?:[-_]|$)", lambda m: f"{m.group(1)}B"),
+        (r"[-_]*(\d+)[mM](?:[-_]|$)", lambda m: f"{m.group(1)}M"),
         (
             r"[-_](\d+(?:\.\d+)?)[xX](\d+)[bB]",
             lambda m: f"{m.group(1)}x{m.group(2)}B (MoE)",
@@ -524,117 +529,136 @@ def determine_versions(arch_info: dict, model_id: str) -> dict:
     }
 
 
-def fetch_model_info(
+def fetch_model_info_func(
     hf_url: str, output_file: Optional[str] = None, hf_home: Optional[str] = None
-) -> ModelInfo:
-    """Main function to fetch and process model information."""
-    model_id = extract_model_id(hf_url)
-    print(f"Fetching info for: {model_id}")
+) -> dict:
+    """Main function to fetch and process model information.
 
-    model_data, requires_auth = fetch_hf_model_info(model_id)
+    Returns:
+        dict: Result with 'success' bool and 'model_info' (as dict) or 'error' message
+    """
+    result = {
+        "success": False,
+        "model_info": None,
+        "error": None,
+    }
 
-    model_name = model_id.split("/")[-1]
-    
-    is_gguf = is_gguf_model(model_id, model_data)
-    if is_gguf:
-        print(f"WARNING: This is a GGUF model - NOT compatible with vLLM!")
-        print(f"         GGUF models require llama.cpp, not vLLM.")
-        print(f"         Setup will be skipped.")
+    try:
+        model_id = extract_model_id(hf_url)
+        logger.info(f"Fetching info for: {model_id}")
 
-    architecture, arch_info = detect_architecture(model_data)
-    if architecture is None:
-        print(f"WARNING: Could not detect architecture, using defaults")
-        architecture = "Unknown"
+        model_data, requires_auth = fetch_hf_model_info(model_id)
 
-    print(f"Architecture: {architecture}")
-    print(f"Family: {arch_info.get('family', 'unknown')}")
+        model_name = model_id.split("/")[-1]
 
-    param_count = estimate_parameters(model_id, model_data)
-    if param_count:
-        print(f"Estimated parameters: {param_count}")
+        is_gguf = is_gguf_model(model_id, model_data)
+        if is_gguf:
+            logger.warning(f"This is a GGUF model - NOT compatible with vLLM!")
+            logger.warning(f"         GGUF models require llama.cpp, not vLLM.")
+            logger.warning(f"         Setup will be skipped.")
 
-    context_length = get_context_length(model_data)
-    print(f"Context length: {context_length}")
+        architecture, arch_info = detect_architecture(model_data)
+        if architecture is None:
+            logger.warning(f"Could not detect architecture, using defaults")
+            architecture = "Unknown"
 
-    license_info = model_data.get("license", "unknown")
-    if not license_info:
-        license_info = model_data.get("cardData", {}).get("license", "unknown")
+        logger.info(f"Architecture: {architecture}")
+        logger.info(f"Family: {arch_info.get('family', 'unknown')}")
 
-    features = detect_special_features(model_id, model_data, arch_info)
+        param_count = estimate_parameters(model_id, model_data)
+        if param_count:
+            logger.info(f"Estimated parameters: {param_count}")
 
-    versions = determine_versions(arch_info, model_id)
+        context_length = get_context_length(model_data)
+        logger.info(f"Context length: {context_length}")
 
-    download_size = estimate_download_size(model_data)
-    if download_size:
-        print(f"Estimated download size: {download_size} GB")
+        license_info = model_data.get("license", "unknown")
+        if not license_info:
+            license_info = model_data.get("cardData", {}).get("license", "unknown")
 
-    local_path = None
-    if hf_home:
-        try:
-            sys.path.insert(0, str(Path(__file__).parent))
-            from download_model import get_model_cache_path
-            local_path = get_model_cache_path(model_id, hf_home)
-        except ImportError:
-            local_path = f"{hf_home}/{model_id}"
+        features = detect_special_features(model_id, model_data, arch_info)
 
-    model_info = ModelInfo(
-        model_id=model_id,
-        model_name=model_name,
-        architecture=architecture,
-        family=arch_info.get("family", "unknown"),
-        parameter_count=param_count,
-        context_length=context_length,
-        is_moe=arch_info.get("is_moe", False),
-        is_multimodal=features["is_multimodal"],
-        is_reasoning=features["is_reasoning"],
-        requires_trust_remote_code=features["requires_trust_remote_code"],
-        requires_auth=requires_auth,
-        license=license_info,
-        vllm_version=versions["vllm"],
-        python_version=versions["python"],
-        pytorch_version=versions["pytorch"],
-        local_model_path=local_path,
-        download_size_gb=download_size,
-        download_status="not_downloaded",
-        is_gguf=is_gguf,
-        vllm_compatible=not is_gguf,
-    )
+        versions = determine_versions(arch_info, model_id)
 
-    model_info.special_args = get_vllm_args(model_info, model_data)
+        download_size = estimate_download_size(model_data)
+        if download_size:
+            logger.info(f"Estimated download size: {download_size} GB")
 
-    print(f"\nModel Summary:")
-    print(f"  ID: {model_info.model_id}")
-    print(f"  Architecture: {model_info.architecture}")
-    print(f"  Family: {model_info.family}")
-    print(f"  Parameters: {model_info.parameter_count or 'unknown'}")
-    print(f"  Context: {model_info.context_length}")
-    print(f"  MoE: {model_info.is_moe}")
-    print(f"  Multimodal: {model_info.is_multimodal}")
-    print(f"  Reasoning: {model_info.is_reasoning}")
-    print(f"  Trust remote code: {model_info.requires_trust_remote_code}")
-    print(f"  Requires auth: {model_info.requires_auth}")
-    print(f"  Download size: {model_info.download_size_gb or 'unknown'} GB")
-    print(f"  vLLM compatible: {model_info.vllm_compatible}")
-    if model_info.is_gguf:
-        print(f"  *** GGUF MODEL - Use llama.cpp instead of vLLM ***")
-    print(f"  vLLM version: {model_info.vllm_version}")
-    print(f"  Python version: {model_info.python_version}")
-    print(f"  PyTorch version: {model_info.pytorch_version}")
+        local_path = None
+        if hf_home:
+            try:
+                sys.path.insert(0, str(Path(__file__).parent))
+                from lm_start.scripts.download_model import get_model_cache_path
 
-    if model_info.special_args:
-        print(f"  Special args: {' '.join(model_info.special_args)}")
+                local_path = get_model_cache_path(model_id, hf_home)
+            except ImportError:
+                local_path = f"{hf_home}/{model_id}"
 
-    if output_file:
-        output_path = Path(output_file)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
+        model_info = ModelInfo(
+            model_id=model_id,
+            model_name=model_name,
+            architecture=architecture,
+            family=arch_info.get("family", "unknown"),
+            parameter_count=param_count,
+            context_length=context_length,
+            is_moe=arch_info.get("is_moe", False),
+            is_multimodal=features["is_multimodal"],
+            is_reasoning=features["is_reasoning"],
+            requires_trust_remote_code=features["requires_trust_remote_code"],
+            requires_auth=requires_auth,
+            license=license_info,
+            vllm_version=versions["vllm"],
+            python_version=versions["python"],
+            pytorch_version=versions["pytorch"],
+            local_model_path=local_path,
+            download_size_gb=download_size,
+            download_status="not_downloaded",
+            is_gguf=is_gguf,
+            vllm_compatible=not is_gguf,
+        )
 
-        info_dict = asdict(model_info)
+        model_info.special_args = get_vllm_args(model_info, model_data)
 
-        with open(output_path, "w") as f:
-            json.dump(info_dict, f, indent=2)
-        print(f"\nModel info saved to: {output_file}")
+        logger.info(f"\nModel Summary:")
+        logger.info(f"  ID: {model_info.model_id}")
+        logger.info(f"  Architecture: {model_info.architecture}")
+        logger.info(f"  Family: {model_info.family}")
+        logger.info(f"  Parameters: {model_info.parameter_count or 'unknown'}")
+        logger.info(f"  Context: {model_info.context_length}")
+        logger.info(f"  MoE: {model_info.is_moe}")
+        logger.info(f"  Multimodal: {model_info.is_multimodal}")
+        logger.info(f"  Reasoning: {model_info.is_reasoning}")
+        logger.info(f"  Trust remote code: {model_info.requires_trust_remote_code}")
+        logger.info(f"  Requires auth: {model_info.requires_auth}")
+        logger.info(f"  Download size: {model_info.download_size_gb or 'unknown'} GB")
+        logger.info(f"  vLLM compatible: {model_info.vllm_compatible}")
+        if model_info.is_gguf:
+            logger.info(f"  *** GGUF MODEL - Use llama.cpp instead of vLLM ***")
+        logger.info(f"  vLLM version: {model_info.vllm_version}")
+        logger.info(f"  Python version: {model_info.python_version}")
+        logger.info(f"  PyTorch version: {model_info.pytorch_version}")
 
-    return model_info
+        if model_info.special_args:
+            logger.info(f"  Special args: {' '.join(model_info.special_args)}")
+
+        if output_file:
+            output_path = Path(output_file)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+
+            info_dict = asdict(model_info)
+
+            with open(output_path, "w") as f:
+                json.dump(info_dict, f, indent=2)
+            logger.info(f"\nModel info saved to: {output_file}")
+
+        result["success"] = True
+        result["model_info"] = asdict(model_info)
+
+    except Exception as e:
+        result["error"] = str(e)
+        logger.error(f"Error fetching model info: {e}")
+
+    return result
 
 
 def main():
@@ -652,11 +676,19 @@ def main():
 
     args = parser.parse_args()
 
-    model_info = fetch_model_info(args.model, args.output, args.hf_home)
+    # Setup logging for CLI
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
 
-    if args.json and not args.output:
-        print(json.dumps(asdict(model_info), indent=2))
+    result = fetch_model_info_func(args.model, args.output, args.hf_home)
+
+    if args.json and not args.output and result["success"]:
+        print(json.dumps(result["model_info"], indent=2))
+    elif not result["success"]:
+        logger.error(f"Failed: {result.get('error', 'Unknown error')}")
+        return 1
+
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
