@@ -63,7 +63,7 @@ class BenchmarkRunner:
     Run vLLM benchmarks using only vllm bench serve.
     """
 
-    DEFAULT_NUM_PROMPTS = 100
+    DEFAULT_NUM_PROMPTS = 64
     DEFAULT_MAX_CONCURRENCY = 32
     DEFAULT_REQUEST_RATE = 32
     DEFAULT_TIMEOUT = 1800  # 30 minutes

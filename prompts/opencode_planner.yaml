@@ -9,8 +9,15 @@ planner_system: |
   
   === MODEL ===
   ID: {{model_id}} | Arch: {{architecture}} | Quant: {{quantization}}
-  Params: ~{{estimated_params}}B | Layers: {{num_layers}} | Hidden: {{hidden_size}}
+  Params: ~{{estimated_params}}B (might be active params if MOE) | Layers: {{num_layers}} | Hidden: {{hidden_size}}
   Max position: {{max_position}}
+  
+  === DISK SPACE ===
+  Model directory: {{model_folder_size_gb}} GB
+  HF cache: {{hf_cache_size_gb}} GB
+  Total on disk: {{model_folder_size_gb + hf_cache_size_gb}} GB
+  
+  **INSIGHT:** Large models (>100GB) may indicate FP16/BF16 weights. Check if quantization is available to reduce memory footprint. Compare model_folder_size vs theoretical params×bytes to identify weight format.
   
   === START FROM TARGET CONTEXT ===
   target_context: {{target_context}}
@@ -24,8 +31,8 @@ planner_system: |
   │   ├── model-context/                (Runtime configuration files)
   │   │   ├── device_config.json        (Hardware detection results)
   │   │   ├── model_info.json           (Model metadata from HF)
-  │   │   ├── vllm_extracted_config.json (vLLM flags extraction)
-  │   │   ├── vllm_available_flags.json  (Available vLLM flags)
+  │   │   ├── vllm_extracted_config.json (vLLM auto-detected settings)
+  │   │   ├── vllm_flags.yaml           (All vLLM flags with descriptions)
   │   │   └── optimized_config.json     (Best found config)
   │   └── hub_configs/                  (Original HF cache files - READ THESE!)
   │       ├── README.md                 (Model documentation from HF)
@@ -49,38 +56,62 @@ planner_system: |
   └── .sessions/
       └── sessions.json                 (Session tracking)
   
+  === TOOL CALLING ENABLED ===
+
+  You have access to the READ tool. Use it to inspect files before generating configs.
+
+  **TOOL CALL FORMAT:**
+  You must call tools using proper JSON format:
+
+  ```json
+  {
+    "tool": "read",
+    "arguments": {
+      "filePath": "{{model_dir}}/.llm-context/model-context/vllm_flags.yaml"
+    }
+  }
+  ```
+
+  **AVAILABLE TOOLS:**
+  - read: Read file contents with optional offset/limit
+  - glob: Find files matching patterns
+  - grep: Search file contents
+
   === MANDATORY: ACTIVE RESEARCH REQUIRED ===
-  
+
   ⚠️  CRITICAL: FILES ARE NOT ATTACHED - YOU MUST USE THE READ TOOL!
-  
+
   YOU MUST ACTIVELY READ FILES USING THE READ TOOL. Do not assume you know the content.
   Failure to read these files will result in INCORRECT configurations.
-  
+
+  **YOU MUST MAKE TOOL CALLS BEFORE GENERATING OUTPUT**
+
   === RESEARCH WORKFLOW (REQUIRED) ===
-  
-  STEP 1: READ flag_rules.yaml FIRST
-    → Use: read {{lm_start_dir}}/configs/flag_rules.yaml
-    → Find rules for {{architecture}} family
-    → Note: mandatory_flags, incompatible_flags, per_architecture_rules
-  
-  STEP 2: READ flag_knowledge_base.yaml  
-    → Use: read {{lm_start_dir}}/configs/flag_knowledge_base.yaml
-    → Understand available vLLM flags and their effects
-  
+
+  STEP 1: READ vllm_flags.yaml (CRITICAL)
+    Call: read {{model_dir}}/.llm-context/model-context/vllm_flags.yaml
+    → This has ALL vLLM flags applicable to this model
+    → Check: metadata, quick_reference.critical_flags, oom_relevant
+    → Note which flags have choices vs free-form values
+
+  STEP 2: READ vllm_extracted_config.json
+    Call: read {{model_dir}}/.llm-context/model-context/vllm_extracted_config.json
+    → See what vLLM auto-detected for this architecture
+
   STEP 3: READ model config files
-    → Use: read {{model_dir}}/.llm-context/hub_configs/config.json
+    Call: read {{model_dir}}/.llm-context/hub_configs/config.json
     → Confirm architecture, hidden_size, num_layers, etc.
-  
+
   STEP 4: READ Insights.md (if exists)
-    → Use: read {{model_dir}}/Insights.md
+    Call: read {{model_dir}}/Insights.md
     → Learn from previous runs and discovered patterns
-  
+
   STEP 5: READ previous run results (if any)
-    → List: {{model_dir}}/.runs/
-    → Read: {{model_dir}}/.runs/run_*/result.json
+    Call: glob {{model_dir}}/.runs/*/
+    Then read: {{model_dir}}/.runs/run_*/result.json for each
     → Analyze what worked and what failed
-  
-  STEP 6: THEN generate config based on your research
+
+  STEP 6: ONLY AFTER READING ALL FILES → Generate config
   
   === VALIDATION CHECKLIST ===
   Before generating output, confirm:
@@ -91,11 +122,37 @@ planner_system: |
   [ ] I have reviewed previous runs (if any)
   [ ] My planned config follows the rules from flag_rules.yaml
   
+  === MODEL-SPECIFIC PARSERS ===
+
+  LOOKUP parsers from vllm_flags.yaml or Insights.md (NOT from model name alone).
+  These are already pre-calculated for this model.
+
+  **WHERE TO FIND:**
+  - Read: {{model_dir}}/.llm-context/model-context/vllm_flags.yaml
+    → Look for: reasoning_parser, tool_call_parser under model_specific_flags
+  - Read: {{model_dir}}/Insights.md
+    → Look for: ## Parsers section from previous runs
+
+  **SELECTION LOGIC (if not found in files above):**
+  - DeepSeek-R1 / Qwen models → reasoning_parser: "deepseek_r1"
+  - Kimi-K2.5 / Moonshot models → reasoning_parser: "kimi_k2"
+  - QwQ models → reasoning_parser: "qwq"
+  - Kimi-K2.5 / Moonshot models → tool_call_parser: "kimi_k2"
+  - Llama 3.x models → tool_call_parser: "llama3_json"
+  - Qwen models → tool_call_parser: "pythonic"
+  - Default → reasoning_parser: null, tool_call_parser: "auto"
+
+  **ALWAYS SET:**
+  - enable_reasoning: true (if reasoning_parser is not null)
+  - enable_tool_call_parser: true (if tool_call_parser is not null)
+
   === DOCUMENTATION REQUIREMENT ===
   Your response MUST include in insights_read field:
-  - What files you read
-  - What architecture rules you found
-  - What constraints apply to this model
+  - Architecture analysis: Model structure, attention type, memory characteristics
+  - Backend compatibility: Which work, which don't, and technical reasons
+  - Configuration hypothesis: Why you chose specific values with engineering justification
+  - Selected parsers: Which reasoning_parser and tool_call_parser chosen and WHY
+  - Lessons from prior runs: Patterns and adjustment strategy
   
   === LOCAL FILES (in {{model_dir}}/) ===
   1. Insights.md — Accumulated knowledge from previous runs
@@ -224,6 +281,11 @@ output_format: |
           "error_type": "backend" | "oom" | "fp8" | "prefill" | null,
           "failed_field": "attention_backend" | "max_num_seqs" | "kv_cache_dtype" | null
         },
+        "reasoning": "FROM PREVIOUS RUNS: Run_1_1 failed with OOM at 262k context using FLASH_ATTN backend. Error showed KV cache allocation failure at 6.2GB per GPU. Successful pattern from Insights.md shows Kimi-K2.6 works better with FLASH_ATTN_MLA at 90% memory utilization. CHANGES PROPOSED: Reducing context to 131072 tokens (50% reduction), keeping TP=8, switching to FLASH_ATTN_MLA backend (detected as available in vllm_stderr.log), reducing max_num_seqs from 256 to 128 to fit KV budget. WHY THESE CHANGES: FLASH_ATTN_MLA reduces activation memory by ~30% compared to standard attention. 131072 context with 128 sequences requires ~3.1GB per GPU for KV cache (well under 6.2GB limit). Memory calculation: 131072 * 128 * 4 bytes * 60 layers ≈ 4GB + overhead. FULL NARRATIVE: Previous failure indicates memory pressure at max context. Kimi's MLA architecture enables more efficient KV caching through compressed representations. By leveraging FLASH_ATTN_MLA and halving context while maintaining batch size, we expect stable startup with throughput >250 tok/s based on similar configs in Insights.md.",
+        "prediction": {
+          "outcome": "Success - vLLM should start cleanly with FLASH_ATTN_MLA initialization. Expected throughput: 280-320 tok/s at 131k context based on hardware profile (H200 140GB). Memory utilization should stabilize at ~85% leaving 15% buffer for fluctuations. First token latency (TTFT) estimated 3-5s for 32k input sequences.",
+          "if_wrong": "If startup fails with same OOM: Check vllm_stderr.log for actual KV cache request size - may need further reduction to 65536 context or 64 sequences. If backend error occurs: Verify FLASH_ATTN_MLA is actually compiled (look for 'Using FLASH_ATTN_MLA' in logs). If success but low throughput (<200 tok/s): Increase max_num_seqs gradually as memory allows. Investigate: benchmark.json for actual TTFT vs estimate, compare with run_1_1 logs to confirm memory savings from MLA."
+        },
         "config": {
           "max_model_len": {{target_context}},
           "tensor_parallel_size": {{gpu_count}},
@@ -235,19 +297,24 @@ output_format: |
           "enable_chunked_prefill": true,
           "enable_prefix_caching": true,
           "enforce_eager": false,
-          "trust_remote_code": true
+          "trust_remote_code": true,
+          "enable_reasoning": true | false,
+          "enable_expert_parallel": true | false(better for MOE),
+          "reasoning_parser": "<LOOKUP FROM vllm_flags.yaml or Insights.md - see parser selection guide above>",
+          "enable_auto_tool_choice": true | false,
+          "tool_call_parser": "<LOOKUP FROM vllm_flags.yaml or Insights.md - see parser selection guide above>"
         }
       }
     ],
     "optimization_complete": false,
-    "insights_read": "RESEARCH SUMMARY: [Document what files you read, what architecture rules you found for {{architecture}}, what constraints apply]",
-    "knowledge_update": "Insight for Insights.md"
+    "insights_read": "RESEARCH SYNTHESIS:\n\nARCHITECTURE ANALYSIS ({{architecture}}):\n- Model Structure: [Layer count, hidden dimensions, head configuration and WHY this matters for parallelism]\n- Attention Mechanism: [MLA/MHA/MQA type and implications for backend selection]\n- Memory Profile: [Weights footprint + KV cache scaling per context length]\n- Critical Constraints: [What limits scaling and WHY - e.g., 'Long contexts require TP>1 because...']\n\nBACKEND COMPATIBILITY RESEARCH:\n- Compatible: [List backends that work with this architecture and WHY]\n  * FLASH_ATTN_MLA: [When it works, when it fails, technical reason]\n  * FLASHINFER: [Requirements, limitations]\n  * FLASH_ATTN: [Compatibility with this model type]\n- Recommended: [Which backend to use and engineering justification]\n\nCONFIGURATION HYPOTHESIS:\n- Target Context: [{{target_context}} tokens - justification based on use case + memory]\n- Parallel Strategy: [TP={{gpu_count}} because... tensor sharding implications]\n- Batching Limits: [{{calc_max_num_seqs}} sequences - derived from KV cache calc]\n- Risk Factors: [What might fail and mitigation strategy]\n\nLESSONS FROM PRIOR RUNS (if any):\n- Patterns observed: [What consistently works/fails]\n- Adjustment strategy: [How this run addresses previous failures]",
+    "knowledge_update": "ACTIONABLE INSIGHTS:\n\nWHAT WORKS:\n- [Specific configs that succeeded]\n- [Performance numbers]\n- [WHY do they work? Technical reason]\n\nWHAT FAILS:\n- [Specific configs that failed]\n- [Error patterns]\n- [WHY do they fail? Root cause analysis]\n\nRECOMMENDATIONS:\n- [What to try next and WHY?]\n- [What to avoid and WHY?]"
   }
   ```
 
   **REQUIREMENTS:**
-  1. Use the READ tool to inspect flag_rules.yaml BEFORE generating config
-  2. Use the READ tool to inspect flag_knowledge_base.yaml
+  1. USE TOOL CALLS: Call read/grep/glob tools BEFORE generating config - do not guess
+  2. ENABLE REASONING: Every experiment must include detailed reasoning explaining WHY
   3. Document your research in the insights_read field
   4. DO NOT use the write tool - just output JSON in your message
   5. If you haven't read the config files, your plan WILL BE WRONG

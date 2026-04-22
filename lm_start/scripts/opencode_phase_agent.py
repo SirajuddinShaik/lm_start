@@ -7,7 +7,11 @@ import json
 import subprocess
 import sys
 import os
+import time
+import uuid
 from pathlib import Path
+
+from .opencode import OPENCODE_BINARY
 
 # Phase-specific contexts for building prompts
 PHASE_CONTEXTS = {
@@ -115,7 +119,7 @@ Read the error logs in .runs/ directory to understand what failed.
 Then modify smoke_test_config.yaml or optimized_config.json to fix issues.""",
 }
 
-OPENCODE_BIN = "/home/ubuntu/.opencode/bin/opencode"
+OPENCODE_BIN = str(OPENCODE_BINARY)
 
 
 class OpenCodePhaseAgent:
@@ -156,6 +160,26 @@ class OpenCodePhaseAgent:
                             return session_id
                         elif not title_hint:
                             return session_id
+            return None
+        except Exception:
+            return None
+
+    def _find_session_by_title(self, title_prefix: str):
+        try:
+            result = subprocess.run(
+                [OPENCODE_BIN, "session", "list"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode != 0:
+                return None
+            lines = result.stdout.strip().split("\n")
+            for line in reversed(lines[1:]):
+                if title_prefix in line:
+                    parts = line.split()
+                    if parts and parts[0].startswith("ses_"):
+                        return parts[0]
             return None
         except Exception:
             return None
@@ -215,17 +239,24 @@ class OpenCodePhaseAgent:
         prompt_file.write_text(prompt)
 
         # Run opencode
+        session_title = f"PhaseRecovery-{self.phase}-{uuid.uuid4().hex[:8]}"
+
         cmd = [
             OPENCODE_BIN,
             "run",
             "--model",
             "Grid/kimi-latest",
+            "--agent",
+            "build",
             "--dir",
             str(self.model_dir),
-            "phase_recovery",
+            "--title",
+            session_title,
             "--file",
             str(prompt_file),
         ]
+
+        time.sleep(2)
 
         try:
             result = subprocess.run(
@@ -235,7 +266,10 @@ class OpenCodePhaseAgent:
                 timeout=120,
             )
 
-            session_id = self._extract_session_id(result.stdout + result.stderr)
+            time.sleep(2)
+            session_id = self._find_session_by_title(session_title)
+            if not session_id:
+                session_id = self._extract_session_id(result.stdout + result.stderr)
             if not session_id:
                 session_id = self._get_latest_opencode_session("recovery")
             if session_id:
@@ -264,7 +298,9 @@ class OpenCodePhaseAgent:
             "current_config": "No config file found",
         }
 
-        model_info_file = self.model_dir / ".llm-context" / "model-context" / "model_info.json"
+        model_info_file = (
+            self.model_dir / ".llm-context" / "model-context" / "model_info.json"
+        )
         if model_info_file.exists():
             try:
                 with open(model_info_file) as f:
@@ -273,7 +309,9 @@ class OpenCodePhaseAgent:
             except:
                 pass
 
-        device_config_file = self.model_dir / ".llm-context" / "model-context" / "device_config.json"
+        device_config_file = (
+            self.model_dir / ".llm-context" / "model-context" / "device_config.json"
+        )
         if device_config_file.exists():
             try:
                 with open(device_config_file) as f:

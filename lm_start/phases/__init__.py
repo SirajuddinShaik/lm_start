@@ -17,6 +17,7 @@ from lm_start.state_manager import StateManager, Phase, PhaseStatus, PHASE_ORDER
 from lm_start.scripts.fetch_model_info import fetch_model_info_func
 from lm_start.scripts.download_model import download_model_func
 from lm_start.scripts.extract_vllm_flags import extract_vllm_flags_func
+from lm_start.utils.model_config_generator import generate_model_config
 
 SCRIPT_DIR = Path(__file__).parent.parent / "scripts"
 
@@ -156,17 +157,20 @@ def phase_init(
 
         # Create detailed device_config.json using actual hardware detection
         from lm_start.core.hardware import HardwareDetector
-        
+
         detector = HardwareDetector()
         hw_info = detector.detect()
-        
+
         import psutil
+
         cpu_count = psutil.cpu_count(logical=False) or psutil.cpu_count() or 64
         total_ram_gb = psutil.virtual_memory().total / (1024**3)
-        
+
         device_config = {
             "device_name": "Auto-Detected",
-            "description": f"{hw_info.gpu_count}x {hw_info.gpus[0].name if hw_info.gpus else 'No GPU'}" if hw_info.gpus else "No GPU detected",
+            "description": f"{hw_info.gpu_count}x {hw_info.gpus[0].name if hw_info.gpus else 'No GPU'}"
+            if hw_info.gpus
+            else "No GPU detected",
             "cuda": {
                 "version": hw_info.cuda_version or "unknown",
                 "home": "/usr/local/cuda" if hw_info.cuda_version else "",
@@ -175,9 +179,15 @@ def phase_init(
                 "visible_devices": hw_info.visible_devices,
                 "count": hw_info.gpu_count,
                 "names": [gpu.name for gpu in hw_info.gpus],
-                "memory_gb_per_gpu": round(hw_info.gpus[0].memory_total_gb, 1) if hw_info.gpus else 0,
+                "memory_gb_per_gpu": round(hw_info.gpus[0].memory_total_gb, 1)
+                if hw_info.gpus
+                else 0,
                 "total_memory_gb": round(hw_info.total_vram_gb, 1),
-                "compute_capability": hw_info.gpus[0].compute_capability if hasattr(hw_info.gpus[0], 'compute_capability') else "9.0" if hw_info.gpus else "",
+                "compute_capability": hw_info.gpus[0].compute_capability
+                if hasattr(hw_info.gpus[0], "compute_capability")
+                else "9.0"
+                if hw_info.gpus
+                else "",
             },
             "system": {
                 "total_ram_gb": round(total_ram_gb, 1),
@@ -227,8 +237,8 @@ def phase_fetch_info(
         hf_home=hf_home,
     )
 
-    if not result_data.get("success", False):
-        error_msg = result_data.get("error", "Unknown error")
+    if not result.get("success", False):
+        error_msg = result.get("error", "Unknown error")
         if runner:
             runner.fail_phase(Phase.FETCH_INFO, error_msg)
         return PhaseResult(False, f"Failed to fetch model info: {error_msg}")
@@ -275,7 +285,7 @@ def phase_download(
         hf_home=hf_home,
     )
 
-    if not result_data.get("success", False):
+    if not result.get("success", False):
         error_msg = result.get("error", f"Download failed for {model_id}")
         print("[INFO] Attempting agentic recovery for download...")
         if run_agentic_recovery(model_dir, "download", error_msg):
@@ -622,28 +632,35 @@ def phase_extract_vllm_config(
         if runner:
             runner.fail_phase(Phase.EXTRACT_VLLM_CONFIG, error_msg)
         return PhaseResult(False, error_msg)
-    
+
     hf_home = get_config_value("paths.hf_home", "/data/.cache/huggingface")
-    
+
     # Run extraction in model's venv using subprocess
     import subprocess
     import json
-    
+
     extract_script = SCRIPT_DIR / "extract_vllm_config.py"
     result = subprocess.run(
-        [str(venv_python), str(extract_script), model_dir, "--max-model-len", "1024", "--json"],
+        [
+            str(venv_python),
+            str(extract_script),
+            model_dir,
+            "--max-model-len",
+            "1024",
+            "--json",
+        ],
         capture_output=True,
         text=True,
         env={**os.environ, "HF_HOME": hf_home},
     )
-    
+
     if result.returncode != 0:
         error_msg = result.stderr or "Extraction failed"
         print(f"[ERROR] vLLM config extraction failed: {error_msg[:200]}...")
         if runner:
             runner.fail_phase(Phase.EXTRACT_VLLM_CONFIG, error_msg)
         return PhaseResult(False, f"Extraction failed: {error_msg[:200]}")
-    
+
     try:
         result_data = json.loads(result.stdout)
     except json.JSONDecodeError:
@@ -662,16 +679,44 @@ def phase_extract_vllm_config(
         return PhaseResult(False, f"Extraction failed: {error_msg[:200]}")
 
     # Also extract vLLM flags (like shell script)
+    # Must use model's venv Python, not lm-start's
     print("[INFO] Extracting available vLLM flags...")
-    flags_result = extract_vllm_flags_func(
-        model_dir=model_dir,
-        profile="balanced",
-    )
-    if not flags_result.get("success", False):
-        error_msg = flags_result.get("error", "Unknown error")
-        print(f"[WARN] vLLM flag extraction failed: {error_msg[:100]}")
+
+    model_venv_python = Path(model_dir) / ".venv" / "bin" / "python"
+    extract_script = Path(__file__).parent.parent / "scripts" / "extract_vllm_flags.py"
+
+    if model_venv_python.exists() and extract_script.exists():
+        result = subprocess.run(
+            [
+                str(model_venv_python),
+                str(extract_script),
+                model_dir,
+                "--profile",
+                "balanced",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if result.returncode == 0:
+            print("[OK] vLLM flags extracted successfully")
+        else:
+            error_msg = result.stderr[:100] if result.stderr else "Unknown error"
+            print(f"[WARN] vLLM flag extraction failed: {error_msg}")
     else:
-        print("[OK] vLLM flags extracted successfully")
+        print(f"[WARN] Cannot extract flags: venv or script not found")
+
+    # Extract comprehensive vLLM flags as YAML
+    print("[INFO] Extracting comprehensive vLLM flags...")
+    try:
+        from lm_start.scripts.extract_vllm_flags import extract_vllm_flags_func
+        result = extract_vllm_flags_func(model_dir)
+        if result.get("success"):
+            print(f"[OK] Extracted {result.get('flags_count', 0)} flags to vllm_flags.yaml")
+        else:
+            print(f"[WARN] Flag extraction: {result.get('error', 'unknown error')}")
+    except Exception as e:
+        print(f"[WARN] Failed to extract vLLM flags: {e}")
 
     sys.path.insert(0, str(SCRIPT_DIR))
     from utils.model_utils import get_model_cache_path

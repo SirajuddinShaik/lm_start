@@ -202,7 +202,7 @@ def get_backend_compatibility_notes(backend: str, model_id: str) -> Optional[str
 # Load from flag_knowledge_base.yaml if available
 def _load_hardware_recommendations() -> Dict:
     """Load hardware recommendations from flag knowledge base."""
-    kb_path = Path(__file__).parent.parent / "configs" / "flag_knowledge_base.yaml"
+    kb_path = Path(__file__).parent.parent.parent / "configs" / "flag_knowledge_base.yaml"
     if kb_path.exists():
         with open(kb_path) as f:
             kb = yaml.safe_load(f)

@@ -50,81 +50,89 @@ def get_version() -> str | None:
         return None
 
 
-def install(version: str = "1.4.0") -> bool:
+def install(version: str = "1.14.19") -> bool:
     """Install OpenCode to ~/.lm-start/opencode/.
 
-    Uses the official install script with specified version and install directory.
+    Downloads and extracts from anomalyco/opencode GitHub releases.
 
     Args:
-        version: Version to install (default: "1.4.0")
+        version: Version to install (default: "1.14.19")
 
     Returns:
         True if installation succeeded, False otherwise.
     """
+    import tarfile
+    import tempfile
+    import shutil
+
     OPENCODE_INSTALL_DIR.mkdir(parents=True, exist_ok=True)
+    OPENCODE_BIN_DIR.mkdir(parents=True, exist_ok=True)
 
-    env = os.environ.copy()
-    env["VERSION"] = version
-    env["OPENCODE_INSTALL_DIR"] = str(OPENCODE_INSTALL_DIR)
+    # Use specific release from anomalyco/opencode
+    # GitHub releases URL pattern: /releases/download/{tag}/{asset}
+    download_url = f"https://github.com/anomalyco/opencode/releases/download/v{version}/opencode-linux-x64.tar.gz"
 
-    def try_download(tools: list[str]) -> str | None:
-        for tool in tools:
-            result = None
-            try:
-                if tool == "curl":
-                    result = subprocess.run(
-                        ["curl", "-sL", "https://get.opencode.ai"],
-                        capture_output=True,
-                        text=True,
-                        timeout=60,
-                        env=env,
-                    )
-                elif tool == "wget":
-                    result = subprocess.run(
-                        ["wget", "-qO-", "https://get.opencode.ai"],
-                        capture_output=True,
-                        text=True,
-                        timeout=60,
-                        env=env,
-                    )
-
-                if result and result.returncode == 0 and result.stdout.strip():
-                    return result.stdout
-            except FileNotFoundError:
-                continue
-            except subprocess.TimeoutExpired:
-                continue
-
-        return None
-
-    script = try_download(["curl", "wget"])
-    if not script:
-        print("Failed to download install script - check network connectivity")
-        return False
+    print(f"Downloading OpenCode from GitHub (anomalyco/opencode)...")
 
     try:
-        process = subprocess.run(
-            ["sh"],
-            input=script,
+        # Create temp file for download
+        with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp_file:
+            tmp_path = tmp_file.name
+
+        # Try curl first
+        result = subprocess.run(
+            ["curl", "-sL", "--fail", "-o", tmp_path, download_url],
             capture_output=True,
             text=True,
             timeout=120,
-            env=env,
         )
 
-        if process.returncode != 0:
-            print(f"Install script failed: {process.stderr}")
+        if result.returncode != 0:
+            # Try wget as fallback
+            result = subprocess.run(
+                ["wget", "-q", "-O", tmp_path, download_url],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+
+        if result.returncode != 0:
+            print(f"Failed to download OpenCode")
+            print(f"  Exit code: {result.returncode}")
+            print(f"  stderr: {result.stderr}")
+            print(f"  URL: {download_url}")
             return False
+
+        # Extract tarball
+        print("Extracting OpenCode...")
+        with tempfile.TemporaryDirectory() as extract_dir:
+            with tarfile.open(tmp_path, "r:gz") as tar:
+                tar.extractall(extract_dir)
+
+            # Find the opencode binary in extracted files
+            extracted_bin = None
+            for root, dirs, files in os.walk(extract_dir):
+                if "opencode" in files:
+                    extracted_bin = os.path.join(root, "opencode")
+                    break
+
+            if not extracted_bin:
+                print("Could not find opencode binary in archive")
+                return False
+
+            # Copy to destination
+            shutil.copy2(extracted_bin, OPENCODE_BINARY)
+            os.chmod(OPENCODE_BINARY, 0o755)
+
+        # Cleanup
+        os.unlink(tmp_path)
 
         if is_installed():
             installed_version = get_version()
-            if installed_version == version:
-                return True
-            else:
-                print(f"Version mismatch: expected {version}, got {installed_version}")
-                return False
+            print(f"✓ OpenCode v{installed_version} installed successfully")
+            return True
         else:
-            print(f"Installation completed but binary not found at {OPENCODE_BINARY}")
+            print(f"Installation failed - binary not found at {OPENCODE_BINARY}")
             return False
 
     except subprocess.TimeoutExpired:
@@ -132,10 +140,13 @@ def install(version: str = "1.4.0") -> bool:
         return False
     except Exception as e:
         print(f"Installation failed: {e}")
+        import traceback
+
+        traceback.print_exc()
         return False
 
 
-def ensure_version(version: str = "1.4.0") -> bool:
+def ensure_version(version: str = "1.14.19") -> bool:
     """Ensure OpenCode is installed with the specified version.
 
     Checks if the correct version is already installed and skips

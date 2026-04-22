@@ -32,6 +32,7 @@ from lm_start.utils.prompt_manager import PromptManager
 from lm_start.utils.log_parser import parse_vllm_logs
 from lm_start.vllm_flag_validator import validate_vllm_flags
 from lm_start.core.config import get_config
+from lm_start.scripts.opencode import OPENCODE_BINARY
 
 
 class OpenCodeAgenticOrchestrator:
@@ -65,7 +66,7 @@ class OpenCodeAgenticOrchestrator:
         self.min_experiments = min_experiments
         self.optimization_mode = optimization_mode
         self.experiments_run = 0
-        self.opencode_bin = "/home/ubuntu/.opencode/bin/opencode"
+        self.opencode_bin = str(OPENCODE_BINARY)
 
         # Directories
         self.runs_dir = self.model_dir / ".runs"
@@ -80,6 +81,10 @@ class OpenCodeAgenticOrchestrator:
         self.current_run_id = 0
         self.prompts = self._load_prompts()
         self.config = get_config()
+
+        # Current plan context (insights from planner for current iteration)
+        self._current_insights_read = ""
+        self._current_knowledge_update = ""
 
     def setup_directories(self):
         """Create required directory structure."""
@@ -122,6 +127,27 @@ class OpenCodeAgenticOrchestrator:
                             return session_id
                         elif not title_hint:
                             return session_id
+            return None
+        except Exception:
+            return None
+
+    def _find_session_by_title(self, title_prefix: str) -> Optional[str]:
+        try:
+            result = subprocess.run(
+                [self.opencode_bin, "session", "list"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode != 0:
+                return None
+
+            lines = result.stdout.strip().split("\n")
+            for line in reversed(lines[1:]):
+                if title_prefix in line:
+                    parts = line.split()
+                    if parts and parts[0].startswith("ses_"):
+                        return parts[0]
             return None
         except Exception:
             return None
@@ -309,6 +335,11 @@ class OpenCodeAgenticOrchestrator:
             with open(summarizer_file) as f:
                 prompts["summarizer"] = yaml.safe_load(f)
 
+        run_summarizer_file = prompts_dir / "run_summarizer.yaml"
+        if run_summarizer_file.exists():
+            with open(run_summarizer_file) as f:
+                prompts["run_summarizer"] = yaml.safe_load(f)
+
         return prompts
 
     def load_model_context(self) -> Dict[str, Any]:
@@ -366,13 +397,21 @@ class OpenCodeAgenticOrchestrator:
         with open(prompt_file, "w") as f:
             f.write(prompt)
 
+        session_title = (
+            f"Planner-{self.model_id.replace('/', '-')}-{uuid.uuid4().hex[:8]}"
+        )
+
         cmd = [
             self.opencode_bin,
             "run",
             "--model",
             "Grid/kimi-latest",
+            "--agent",
+            "build",
             "--dir",
             str(self.model_dir),
+            "--title",
+            session_title,
             "planner",
             "--file",
             str(prompt_file),
@@ -395,7 +434,9 @@ class OpenCodeAgenticOrchestrator:
                 f.write(f"STDERR:\n{result.stderr}\n\n")
                 f.write(f"Return code: {result.returncode}\n")
 
-            session_id = self._extract_session_id(result.stdout + result.stderr)
+            session_id = self._find_session_by_title(session_title)
+            if not session_id:
+                session_id = self._extract_session_id(result.stdout + result.stderr)
             if not session_id:
                 session_id = self._get_latest_opencode_session("planner")
             if session_id:
@@ -433,6 +474,40 @@ class OpenCodeAgenticOrchestrator:
             )
             if plan.get("reasoning"):
                 print(f"  Reasoning: {plan['reasoning']}")
+
+            # Save experiment reasoning/predictions
+            for exp in plan.get("experiments_queued", []):
+                if exp.get("reasoning") or exp.get("prediction"):
+                    exp["_planner_context"] = {
+                        "reasoning": exp.get("reasoning", ""),
+                        "prediction": exp.get("prediction", {}),
+                    }
+
+            if plan.get("insights_read") or plan.get("knowledge_update"):
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                insights_file = self.opencode_dir / f"planner_insights_{timestamp}.json"
+                insights_data = {
+                    "timestamp": datetime.now().isoformat(),
+                    "insights_read": plan.get("insights_read", ""),
+                    "knowledge_update": plan.get("knowledge_update", ""),
+                    "optimization_complete": plan.get("optimization_complete", False),
+                }
+                with open(insights_file, "w") as f:
+                    json.dump(insights_data, f, indent=2)
+                print(f"  Saved planner insights to {insights_file}")
+
+                if plan.get("insights_read"):
+                    self._current_insights_read = plan["insights_read"]
+                    self._append_insights_read_to_md(plan["insights_read"])
+                else:
+                    self._current_insights_read = ""
+
+                if plan.get("knowledge_update"):
+                    self._current_knowledge_update = plan["knowledge_update"]
+                    self._append_planner_insights_to_md(plan["knowledge_update"])
+                else:
+                    self._current_knowledge_update = ""
+
             return plan
 
         except subprocess.TimeoutExpired:
@@ -488,8 +563,8 @@ class OpenCodeAgenticOrchestrator:
         )
 
         target_context = max_position if max_position else 32768
-        calc_max_num_seqs = min(256, max(64, target_context // 256))
-        calc_batched_tokens = min(65536, target_context * 2)
+        calc_max_num_seqs = min(128, max(64, target_context // 256))
+        calc_batched_tokens = min(32768, target_context / 4)
         calc_gpu_util = 0.90
 
         # Respect CUDA_VISIBLE_DEVICES - use visible count if set
@@ -518,6 +593,25 @@ class OpenCodeAgenticOrchestrator:
         except:
             pass
 
+        # Calculate HF cache size (entire models--* directory including blobs)
+        hf_cache_size_gb = 0
+        try:
+            cache_id = self.model_id.replace("/", "--")
+            hf_home = os.environ.get("HF_HOME", "/data/.cache/huggingface")
+            cache_root = Path(hf_home) / "hub" / f"models--{cache_id}"
+            if cache_root.exists():
+                result = subprocess.run(
+                    ["du", "-sb", str(cache_root)],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                )
+                if result.returncode == 0:
+                    size_bytes = int(result.stdout.split()[0])
+                    hf_cache_size_gb = round(size_bytes / (1024**3), 1)
+        except Exception as e:
+            print(f"  Warning: Could not calculate HF cache size: {e}")
+
         template_vars = {
             "gpu_count": effective_gpu_count,
             "gpu_total_count": gpu_count,
@@ -526,6 +620,7 @@ class OpenCodeAgenticOrchestrator:
             "gpu_memory_total": effective_gpu_count * gpu_memory,
             "compute_capability": compute_capability,
             "model_folder_size_gb": model_folder_size_gb,
+            "hf_cache_size_gb": hf_cache_size_gb,
             "cuda_version": device.get("cuda", {}).get("version", "unknown"),
             "system_ram": device.get("system", {}).get("total_ram_gb", 0),
             "model_id": model_id,
@@ -752,10 +847,9 @@ class OpenCodeAgenticOrchestrator:
             }
             config = profiles.get(profile_map[profile], config)
 
-        if str(run_id).startswith("run_"):
-            run_dir = self.runs_dir / str(run_id)
-        else:
-        run_dir = self.runs_dir / (run_id if str(run_id).startswith("run_") else f"run_{run_id}")
+        run_dir = self.runs_dir / (
+            run_id if str(run_id).startswith("run_") else f"run_{run_id}"
+        )
 
         if run_dir.exists():
             suffix = uuid.uuid4().hex[:4]
@@ -784,6 +878,11 @@ class OpenCodeAgenticOrchestrator:
                     "profile": profile,
                     "timestamp_started": datetime.now().isoformat(),
                     "venv_mode": experiment.get("venv_mode", "inherit"),
+                    "insights_read": getattr(self, "_current_insights_read", ""),
+                    "knowledge_update": getattr(self, "_current_knowledge_update", ""),
+                    "previous_run": experiment.get("previous_run"),
+                    "reasoning": experiment.get("reasoning", ""),
+                    "prediction": experiment.get("prediction"),
                 },
                 f,
                 indent=2,
@@ -899,7 +998,9 @@ class OpenCodeAgenticOrchestrator:
             try:
                 log_analysis = parse_vllm_logs(stdout_log, stderr_log)
 
-                log_analysis_summary = {k: v for k, v in log_analysis.items() if k != 'errors'}
+                log_analysis_summary = {
+                    k: v for k, v in log_analysis.items() if k != "errors"
+                }
 
                 if log_analysis["likely_success"] and result.get("success"):
                     result["success"] = True
@@ -1023,7 +1124,9 @@ class OpenCodeAgenticOrchestrator:
         print(f"│  │")
         print(f"│  │  📝 Phase 3/3: Summarizing...")
 
-        run_dir = self.runs_dir / f"run_{run_id}"
+        run_dir = self.runs_dir / (
+            run_id if str(run_id).startswith("run_") else f"run_{run_id}"
+        )
 
         # Build prompt
         prompt = self._build_summarizer_prompt(run_id, run_dir, result)
@@ -1037,23 +1140,30 @@ class OpenCodeAgenticOrchestrator:
         result_file = run_dir / "result.json"
         config_file = run_dir / "config.json"
 
+        session_title = f"Summarizer-{run_id}-{uuid.uuid4().hex[:8]}"
+
         cmd = [
             self.opencode_bin,
             "run",
             "--model",
             "Grid/kimi-latest",
+            "--agent",
+            "build",
             "--dir",
             str(self.model_dir),
             "--file",
             str(prompt_file),
+            "--title",
+            session_title,
+            "--format",
+            "json",
+            "summarize",
         ]
 
         if result_file.exists():
             cmd.extend(["--file", str(result_file)])
         if config_file.exists():
             cmd.extend(["--file", str(config_file)])
-
-        cmd.append("summarize")
 
         try:
             sub_result = subprocess.run(
@@ -1064,7 +1174,12 @@ class OpenCodeAgenticOrchestrator:
                 env=self.config.get_env_dict(str(self.model_dir / ".venv")),
             )
 
-            session_id = self._extract_session_id(sub_result.stdout + sub_result.stderr)
+            time.sleep(2)
+            session_id = self._find_session_by_title(session_title)
+            if not session_id:
+                session_id = self._extract_session_id(
+                    sub_result.stdout + sub_result.stderr
+                )
             if not session_id:
                 session_id = self._get_latest_opencode_session("recovery")
             if session_id:
@@ -1083,40 +1198,77 @@ class OpenCodeAgenticOrchestrator:
                 )
 
             self._archive_logs(run_id, run_dir)
-            print(f"│  │  ✅ Summary complete")
-            return {"success": True}
+            summary_file = run_dir / "summary.json"
+            insights_file = self.model_dir / "Insights.md"
+
+            files_created = []
+            if summary_file.exists():
+                files_created.append("summary.json")
+            if insights_file.exists() and insights_file.stat().st_size > 200:
+                files_created.append("Insights.md")
+
+            if files_created:
+                print(
+                    f"│  │  ✅ Summary complete - Created: {', '.join(files_created)}"
+                )
+                return {"success": True, "files_created": files_created}
+            else:
+                print(f"│  │  ⚠️ Summarizer ran but no files created")
+                print(
+                    f"│  │     Output: {sub_result.stdout[:200] if sub_result.stdout else 'No output'}"
+                )
+                return {"success": False, "error": "No summary files created"}
 
         except Exception as e:
             print(f"│  │  ⚠️ Summarizer failed: {e}")
             return {"success": False, "error": str(e)}
 
     def _build_summarizer_prompt(self, run_id: str, run_dir: Path, result: Dict) -> str:
-        """Build summarizer prompt using external prompt file."""
-        success = result.get("success", False)
-        error = result.get("error", "")
-        error_type = result.get("error_type", "")
-        config = result.get("config", {})
-
-        template_vars = {
-            "run_id": run_id,
-            "run_dir": str(run_dir),
-            "model_dir": str(self.model_dir),
-            "success_status": "YES" if success else "NO",
-            "success_bool": str(success).lower(),
-            "max_model_len": config.get("max_model_len", "unknown"),
-            "profile": config.get("_profile", "unknown"),
-            "error_status": error_type if error else "None",
-            "error_type": error_type,
-        }
-
         summarizer_prompts = self.prompts.get("summarizer", {})
         prompt = summarizer_prompts.get("summarizer_system", "")
 
-        for key, value in template_vars.items():
-            placeholder = f"{{{{{key}}}}}"
-            prompt = prompt.replace(placeholder, str(value))
+        prompt = prompt.replace("{{run_id}}", str(run_id))
+        prompt = prompt.replace("{{run_dir}}", str(run_dir))
+        prompt = prompt.replace("{{model_dir}}", str(self.model_dir))
 
         return prompt
+
+    def _append_planner_insights_to_md(self, knowledge_update: str):
+        insights_file = self.model_dir / "Insights.md"
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        entry = f"\n## Planner Insight ({timestamp})\n\n{knowledge_update}\n"
+
+        try:
+            if insights_file.exists():
+                with open(insights_file, "a") as f:
+                    f.write(entry)
+            else:
+                with open(insights_file, "w") as f:
+                    f.write(f"# Insights for {self.model_id}\n")
+                    f.write(entry)
+            print(f"  Appended insight to Insights.md")
+        except Exception as e:
+            print(f"  Warning: Could not append to Insights.md: {e}")
+
+    def _append_insights_read_to_md(self, insights_read: str):
+        """Append planner's research documentation to Insights.md."""
+        insights_file = self.model_dir / "Insights.md"
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        entry = f"\n## Research Documentation ({timestamp})\n\n{insights_read}\n"
+
+        try:
+            if insights_file.exists():
+                with open(insights_file, "a") as f:
+                    f.write(entry)
+            else:
+                with open(insights_file, "w") as f:
+                    f.write(f"# Insights for {self.model_id}\n")
+                    f.write(entry)
+            print(f"  Appended research documentation to Insights.md")
+        except Exception as e:
+            print(f"  Warning: Could not append to Insights.md: {e}")
 
     def _archive_logs(self, run_id: str, run_dir: Path):
         """Archive logs to .logs/ directory."""
@@ -1312,6 +1464,87 @@ class OpenCodeAgenticOrchestrator:
 
         # Final summary
         self._generate_final_report()
+
+    def spawn_run_summarizer_agent(self, create_master: bool = True) -> Dict[str, Any]:
+        """Spawn agent to summarize all runs and create summary.json for each."""
+        print(f"\n{'━' * 60}")
+        print("📊 RUN SUMMARIZER AGENT")
+        print(f"   Processing all runs in: {self.runs_dir}")
+        print(f"{'━' * 60}")
+
+        run_summarizer_prompts = self.prompts.get("run_summarizer", {})
+        prompt = run_summarizer_prompts.get("run_summarizer_system", "")
+
+        prompt = prompt.replace("{{model_dir}}", str(self.model_dir))
+        prompt = prompt.replace("{{model_id}}", self.model_id)
+
+        prompt_file = self.opencode_dir / "run_summarizer_prompt.txt"
+        with open(prompt_file, "w") as f:
+            f.write(prompt)
+
+        cmd = [
+            self.opencode_bin,
+            "--session",
+            f"run_summarizer_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+            "--instruction",
+            str(prompt_file),
+            "--cwd",
+            str(self.model_dir),
+        ]
+
+        print(f"Spawning run summarizer...")
+        print(f"Command: {' '.join(cmd[:5])}...")
+
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=600,
+            )
+
+            output = result.stdout + "\n" + result.stderr
+            session_id = self._extract_session_id(output)
+
+            result_data = {
+                "success": result.returncode == 0,
+                "returncode": result.returncode,
+                "stdout": result.stdout[-2000:]
+                if len(result.stdout) > 2000
+                else result.stdout,
+                "stderr": result.stderr[-2000:]
+                if len(result.stderr) > 2000
+                else result.stderr,
+                "session_id": session_id,
+            }
+
+            if result_data["success"]:
+                print(f"   ✓ Run summarizer completed")
+                if session_id:
+                    print(f"   Session: {session_id}")
+            else:
+                print(f"   ✗ Run summarizer failed (exit {result.returncode})")
+
+            return result_data
+
+        except subprocess.TimeoutExpired:
+            print("   ✗ Run summarizer timed out after 10 minutes")
+            return {"success": False, "error": "Timeout"}
+        except Exception as e:
+            print(f"   ✗ Run summarizer error: {e}")
+            return {"success": False, "error": str(e)}
+
+    def summarize_all_runs(self) -> Dict[str, Any]:
+        """Summarize all existing runs without running optimization."""
+        self.setup_directories()
+
+        run_dirs = list(self.runs_dir.glob("run_*"))
+        if not run_dirs:
+            print("No runs found to summarize")
+            return {"success": False, "error": "No runs found", "runs_count": 0}
+
+        print(f"Found {len(run_dirs)} run directories to process")
+        return self.spawn_run_summarizer_agent(create_master=True)
 
     def _generate_final_report(self):
         """Generate final optimization report."""

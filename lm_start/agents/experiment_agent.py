@@ -154,7 +154,7 @@ class ExperimentAgent(BaseAgent):
 
             # Try to load reduction priority from flag_knowledge_base.yaml
             kb_path = (
-                Path(__file__).parent.parent / "configs" / "flag_knowledge_base.yaml"
+                Path(__file__).parent.parent.parent / "configs" / "flag_knowledge_base.yaml"
             )
             if kb_path.exists():
                 import yaml

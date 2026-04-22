@@ -8,7 +8,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from lm_start import config
 from lm_start import constants
-from lm_start import opencode as oc
+from lm_start.scripts import opencode as oc
 from lm_start import system as sys_detect
 
 console = Console()

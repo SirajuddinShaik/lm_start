@@ -4,7 +4,7 @@ Advanced Agentic vLLM Optimization
 
 Iterative optimization that:
 1. Reviews previous optimization history
-2. Determines if model is already optimized
+2. Determines if model is already optimized 
 3. Runs sequentially with intelligent retries
 4. Analyzes all results and does additional runs if needed
 5. Continues until satisfaction criteria met

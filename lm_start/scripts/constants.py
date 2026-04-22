@@ -5,6 +5,9 @@ from pathlib import Path
 # Base directory for all lm-start configuration
 LM_START_DIR = Path.home() / ".lm-start"
 
+# OpenCode installation directory (use lm-start subdirectory to avoid conflicts)
+OPENCODE_DIR = LM_START_DIR / "opencode"
+
 # Subdirectory for config files
 LM_START_CONFIG_DIR = LM_START_DIR / "config"
 

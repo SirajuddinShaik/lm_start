@@ -17,6 +17,7 @@ from rich.table import Table
 from rich.panel import Panel
 
 from lm_start import constants
+from lm_start.scripts.opencode import OPENCODE_BINARY
 
 LM_START_AGENT_TYPES = {"planner", "summarizer", "recovery"}
 LM_START_PHASES = {
@@ -123,7 +124,7 @@ def open_session(
         raise typer.Exit(code=1)
 
     session = matches[0]
-    opencode_bin = "/home/ubuntu/.opencode/bin/opencode"
+    opencode_bin = str(OPENCODE_BINARY)
     full_session_id = session.get("session_id", session_id)
     model_dir = session.get("model_dir", "")
 
@@ -481,7 +482,7 @@ def sync_sessions(
     model: Optional[str] = typer.Argument(None, help="Model to sync sessions for"),
 ):
     """Sync sessions from opencode CLI to local registry."""
-    opencode_bin = "/home/ubuntu/.opencode/bin/opencode"
+    opencode_bin = str(OPENCODE_BINARY)
 
     try:
         result = subprocess.run(

@@ -28,45 +28,70 @@ summarizer_system: |
       ├── vllm_stderr.log           (KV stats, INFO)
       └── summary.json              ← YOU CREATE THIS!
 
-  === EXTRACTION WORKFLOW ===
+  === DYNAMIC FILE READING WORKFLOW ===
 
-  STEP 1: Read result.json (Source of Truth)
+  READ FILES DIRECTLY FROM DISK - Do not rely on pre-processed data!
+
+  STEP 1: List ALL Files in Run Directory
+    → {{run_dir}}/
+    List every file present. Common files:
+    - config.json, result.json, benchmark.json
+    - vllm_stdout.log, vllm_stderr.log
+    - meta.json, summary.json (if exists)
+
+  STEP 2: Read config.json (The Configuration Tested)
+    → {{run_dir}}/config.json
+    Extract:
+    - max_model_len, tensor_parallel_size, attention_backend
+    - gpu_memory_utilization, kv_cache_dtype
+    - All vLLM flags used
+
+  STEP 3: Read result.json (Success/Failure Status)
     → {{run_dir}}/result.json
     Extract:
     - "success" (boolean)
-    - "config" (the configuration tested)
-    - "log_analysis.success_indicators" (KV cache size, etc.)
-    - "log_analysis.errors" (error patterns)
-    - "log_analysis.backends.detected"
+    - "error" (error message if failed)
+    - "error_type" (oom, backend, config, etc.)
+    - "config" (backup if config.json missing)
+    - "log_analysis" (if present - summary only)
 
-  STEP 2: Extract Backend Info (vllm_stdout.log)
-    → {{run_dir}}/vllm_stdout.log
+  STEP 4: Read vLLM Logs (Raw Data)
+    → {{run_dir}}/vllm_stdout.log (if exists)
+    → {{run_dir}}/vllm_stderr.log (if exists)
     Search for:
-    - "Using.*backend" → "Using FlashAttention backend"
-    - Backend initialization messages
-    - Available backends detected
+    - "Using.*backend" → backend selection
+    - "GPU KV cache size:" → memory allocation
+    - "Maximum concurrency" → throughput capability
+    - "ERROR" or "Traceback" → failure reasons
+    - "CUDA OOM" or "out of memory" → OOM errors
 
-  STEP 3: Extract Performance (benchmark.json if success)
-    → {{run_dir}}/benchmark.json
+  STEP 5: Read benchmark.json (Performance Metrics)
+    → {{run_dir}}/benchmark.json (if success)
     Extract:
-    - "summary.avg_throughput"
-    - "summary.avg_ttft_ms"
-    - "summary.avg_tpot_ms"
+    - "summary.avg_throughput" (tok/s)
+    - "summary.avg_ttft_ms" (time to first token)
+    - "summary.avg_tpot_ms" (time per output token)
     - "summary.overall_score"
-    - Individual test results
 
-  STEP 4: Read ALL Previous Run Summaries (CRITICAL FOR INSIGHTS.MD)
-    → List all {{model_dir}}/.runs/run_*/summary.json files
-    → Read each existing summary.json
-    → Build comparison: what worked, what failed, trends
-    → Identify patterns across runs (e.g., "FLASH_ATTN works at 32K but OOMs at 64K")
-    → Note: If this is run_1_1, no previous summaries exist yet
+  STEP 6: Discover ALL Previous Runs
+    → List {{model_dir}}/.runs/*/ directories
+    → Find all run_* folders
+    → Read their summary.json files (if exist)
+    → Build comparison table: what worked vs what failed
+    → Identify patterns across runs
 
-  STEP 5: Read Existing Insights
+  STEP 7: Read Existing Insights.md
     → {{model_dir}}/Insights.md
-    Understand what's already documented
+    Understand what's already documented before updating
 
   === CREATE summary.json ===
+
+  ACTIONS REQUIRED - YOU MUST WRITE FILES:
+
+  1. Use the Write tool to create: {{run_dir}}/summary.json
+  2. Use the Edit tool to update: {{model_dir}}/Insights.md
+
+  DO NOT just output JSON in your response - actually WRITE the files!
 
   Write to: {{run_dir}}/summary.json
 

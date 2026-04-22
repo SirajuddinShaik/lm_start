@@ -170,7 +170,7 @@ class TheoreticalCalculator:
 
     def _load_flag_rules(self) -> Dict:
         """Load flag rules from config."""
-        config_path = Path(__file__).parent.parent / "configs" / "flag_rules.yaml"
+        config_path = Path(__file__).parent.parent.parent / "configs" / "flag_rules.yaml"
         if config_path.exists():
             with open(config_path) as f:
                 return yaml.safe_load(f)
