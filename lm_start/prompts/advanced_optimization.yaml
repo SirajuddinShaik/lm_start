@@ -1,0 +1,352 @@
+# Advanced vLLM Optimization Prompts
+# Based on production-grade configurations
+
+# =============================================================================
+# Advanced Strategy - Full Optimization Suite
+# =============================================================================
+
+advanced_strategy: |
+  You are a vLLM optimization expert. Perform comprehensive optimization for maximum performance.
+
+  MODEL: {{model_id}}
+  MODEL SIZE: {{model_size_gb}} GB
+  MAX POSITION EMBEDDINGS: {{max_position_embeddings}}
+  IS QUANTIZED: {{is_quantized}}
+
+  HARDWARE:
+  - GPUs: {{gpu_count}} x {{gpu_memory_gb}}GB
+  - CUDA Devices: {{cuda_devices}}
+
+  MODEL CAPABILITIES:
+  {{capabilities|json}}
+
+  CURRENT BASE CONFIG:
+  {{base_config|json}}
+
+  EXPERIMENT WITH THESE ADVANCED PARAMETERS:
+
+  1. ATTENTION BACKENDS (test in order):
+     - FLASHINFER (fastest for most models)
+     - FLASH_ATTN (fallback)
+     - FLASH_ATTN_VLLM_V1 (for newer models)
+     - XFORMERS (if others fail)
+
+  2. KV CACHE CONFIGURATION:
+     - kv_cache_dtype: auto, fp8, fp16 (test for quantized models)
+     - enable_prefix_caching: true (almost always beneficial)
+
+  3. BATCHING & THROUGHPUT:
+     - max_num_batched_tokens: 8192, 16384, 32768, 65536
+     - max_num_seqs: 128, 256, 512
+     - enable_chunked_prefill: true (for long context)
+
+  4. CUDAGRAPH OPTIMIZATION:
+     - max_cudagraph_capture_size: 64, 128, 256
+     - compilation_config: {"cudagraph_mode": "FULL_AND_PIECEWISE"}
+
+  5. PARSERS (based on model capabilities):
+     {{#is_reasoning}}
+     - reasoning_parser: deepseek_r1 (for DeepSeek/Qwen), kimi_k2.5 (for Kimi)
+     {{/is_reasoning}}
+     {{#supports_tools}}
+     - tool_call_parser: qwen3_coder (Qwen), kimi_k2.5 (Kimi), hermes (others)
+     {{/supports_tools}}
+
+  6. TOKENIZER & CHAT:
+     - tokenizer_mode: hf (if chat_template exists)
+     - default_chat_template_kwargs: {"thinking": true} (for reasoning models)
+
+  TEST STRATEGY:
+  1. Start with conservative settings (TP=8 for large models, lower batch sizes)
+  2. Test different attention backends with same base config
+  3. Tune batching parameters for throughput
+  4. Enable cudagraph if stable
+  5. Add parsers last (they don't affect performance)
+
+  Return JSON:
+  {
+    "analysis": "Model type assessment and recommended approach",
+    "phases": [
+      {
+        "phase": 1,
+        "name": "backend_selection",
+        "configs": [
+          {
+            "name": "flashinfer_baseline",
+            "tensor_parallel_size": N,
+            "attention_backend": "FLASHINFER",
+            "max_model_len": N,
+            "gpu_memory_utilization": 0.9,
+            "enable_prefix_caching": true,
+            "test_priority": 1
+          }
+        ]
+      },
+      {
+        "phase": 2,
+        "name": "batching_optimization",
+        "depends_on": "backend_selection",
+        "configs": [
+          {
+            "max_num_batched_tokens": 65536,
+            "max_num_seqs": 128,
+            "enable_chunked_prefill": true
+          }
+        ]
+      },
+      {
+        "phase": 3,
+        "name": "cudagraph_optimization",
+        "depends_on": "batching_optimization",
+        "configs": [
+          {
+            "max_cudagraph_capture_size": 128,
+            "compilation_config": {"cudagraph_mode": "FULL_AND_PIECEWISE"}
+          }
+        ]
+      }
+    ],
+    "recommended_flags": {
+      "always_include": ["--enable-prefix-caching"],
+      "if_stable": ["--enable-chunked-prefill", "--enable-auto-tool-choice"],
+      "model_specific": ["--reasoning-parser deepseek_r1", "--tool-call-parser qwen3_coder"]
+    },
+    "expected_best_config": {
+      "tensor_parallel_size": N,
+      "attention_backend": "FLASHINFER",
+      "max_num_batched_tokens": 65536,
+      "max_num_seqs": 128,
+      "enable_chunked_prefill": true,
+      "max_cudagraph_capture_size": 128
+    }
+  }
+
+# =============================================================================
+# Backend Comparison Test
+# =============================================================================
+
+backend_comparison: |
+  Compare attention backends for {{model_id}}.
+
+  Current best backend: {{current_backend}}
+  Current throughput: {{current_throughput}} tokens/sec
+
+  Test these backends in order:
+  1. FLASHINFER - Fastest for most, best memory efficiency
+  2. FLASH_ATTN - Good fallback, widely compatible
+  3. FLASH_ATTN_VLLM_V1 - Newer implementation, try if others fail
+  4. XFORMERS - Last resort compatibility
+
+  For each backend, test with:
+  - Same context length: {{context_length}}
+  - Same tensor parallel: {{tensor_parallel_size}}
+  - Measure: startup time, throughput, latency p50/p99
+
+  Return JSON:
+  {
+    "backends_to_test": ["FLASHINFER", "FLASH_ATTN", "FLASH_ATTN_VLLM_V1"],
+    "test_order": "fastest_first",
+    "success_criteria": {
+      "min_throughput": N,
+      "max_latency_p99": N,
+      "must_startup": true
+    },
+    "early_termination": "Stop if FLASHINFER achieves >90% of target throughput"
+  }
+
+# =============================================================================
+# Batching Optimization
+# =============================================================================
+
+batching_optimization: |
+  Optimize batching parameters for {{model_id}}.
+
+  Current config:
+  - Throughput: {{current_throughput}} tok/s
+  - Latency p50: {{latency_p50}} ms
+  - Latency p99: {{latency_p99}} ms
+
+  Test these combinations:
+  max_num_batched_tokens x max_num_seqs:
+  - (8192, 64)   - Conservative
+  - (16384, 128) - Balanced
+  - (32768, 128) - Higher throughput
+  - (65536, 128) - Maximum (from example config)
+  - (65536, 256) - If memory allows
+
+  Also test chunked prefill:
+  - Without chunked prefill (baseline)
+  - With --enable-chunked-prefill
+
+  Return JSON:
+  {
+    "test_matrix": [
+      {"max_num_batched_tokens": 8192, "max_num_seqs": 64, "enable_chunked_prefill": false},
+      {"max_num_batched_tokens": 65536, "max_num_seqs": 128, "enable_chunked_prefill": true}
+    ],
+    "metrics_to_track": ["throughput", "latency_p50", "latency_p99", "gpu_memory"],
+    "optimization_goal": "maximize_throughput",
+    "latency_constraints": {
+      "p50_max": 500,
+      "p99_max": 2000
+    }
+  }
+
+# =============================================================================
+# CUDAGraph Optimization
+# =============================================================================
+
+cudagraph_optimization: |
+  Optimize CUDAGraph settings for {{model_id}}.
+
+  CUDAGraph captures CUDA operations to reduce CPU overhead.
+  Only enable if the model is stable (no OOM, consistent performance).
+
+  Current stable config:
+  {{stable_config|json}}
+
+  Test these cudagraph_capture_size values:
+  - 64 (conservative, lower memory)
+  - 128 (balanced, from example config)
+  - 256 (aggressive, higher memory)
+
+  With compilation_config:
+  - {"cudagraph_mode": "FULL_AND_PIECEWISE"} (recommended)
+
+  Return JSON:
+  {
+    "prerequisites": "Config must be stable for 3+ consecutive runs",
+    "test_values": [64, 128, 256],
+    "compilation_config": {"cudagraph_mode": "FULL_AND_PIECEWISE"},
+    "abort_conditions": ["OOM", "startup_failure", ">20% latency regression"],
+    "recommended_default": 128
+  }
+
+# =============================================================================
+# Parser Selection
+# =============================================================================
+
+parser_selection: |
+  Select appropriate parsers for {{model_id}} based on capabilities.
+
+  MODEL CAPABILITIES:
+  {{capabilities|json}}
+
+  AVAILABLE PARSERS:
+
+  Reasoning Parsers:
+  - deepseek_r1: For DeepSeek R1, Qwen QwQ (think/thinking tags)
+  - kimi_k2.5: For Moonshot Kimi models
+  - default: Generic thinking pattern detection
+
+  Tool Call Parsers:
+  - qwen3_coder: For Qwen 2.5 Coder, QwQ (Qwen tool format)
+  - kimi_k2.5: For Moonshot Kimi (Kimi tool format)
+  - hermes: For Hermes, Llama models (Hermes format)
+  - internlm: For InternLM models
+
+  Return JSON:
+  {
+    "recommended_parsers": {
+      "reasoning": "parser_name or null",
+      "tool": "parser_name or null"
+    },
+    "test_required": true/false,
+    "parser_flags": [
+      "--reasoning-parser deepseek_r1",
+      "--tool-call-parser qwen3_coder"
+    ]
+  }
+
+# =============================================================================
+# KV Cache Optimization
+# =============================================================================
+
+kv_cache_optimization: |
+  Optimize KV cache settings for {{model_id}}.
+
+  MODEL INFO:
+  - Quantized: {{is_quantized}}
+  - Quantization type: {{quantization_type}}
+  - Current dtype: {{current_dtype}}
+
+  KV CACHE DTYPE OPTIONS:
+  - auto: Let vLLM decide (usually fp16)
+  - fp16: Standard, good compatibility
+  - fp8: For FP8 quantized models, saves memory
+  - bf16: Better range than fp16, if supported
+
+  ADDITIONAL FLAGS:
+  - --kv-cache-metrics: Track KV cache utilization
+  - --kv-cache-metrics-sample 0.05: Sample 5% of requests
+
+  Return JSON:
+  {
+    "recommended_dtype": "auto|fp16|fp8|bf16",
+    "reasoning": "why this dtype",
+    "additional_flags": ["--kv-cache-metrics", "--kv-cache-metrics-sample 0.05"],
+    "memory_savings": "estimated % saved with fp8"
+  }
+
+# =============================================================================
+# Final Configuration Assembly
+# =============================================================================
+
+final_assembly: |
+  Assemble the final optimal configuration for {{model_id}}.
+
+  TESTED CONFIGURATIONS AND RESULTS:
+  {{test_results|json}}
+
+  BEST CONFIG FROM EACH CATEGORY:
+  - Backend: {{best_backend}}
+  - Batching: {{best_batching}}
+  - CUDAGraph: {{best_cudagraph}}
+  - Parsers: {{best_parsers}}
+
+  MODEL CAPABILITIES:
+  {{capabilities|json}}
+
+  FINAL CONFIG REQUIREMENTS:
+  1. Must include all flags that improved performance
+  2. Must include capability-based parsers
+  3. Must have --served-model-name with aliases
+  4. Must include all environment variables
+  5. Should be copy-paste ready for PM2
+
+  Return JSON:
+  {
+    "final_config": {
+      "name": "model_name",
+      "script": ".venv/bin/vllm",
+      "args": [
+        "serve", "model_id",
+        "--tensor-parallel-size", "N",
+        "--max-model-len", "N",
+        "--attention-backend", "FLASHINFER",
+        "--max-num-batched-tokens", "65536",
+        "--max-num-seqs", "128",
+        "--enable-prefix-caching",
+        "--enable-chunked-prefill",
+        "--enable-auto-tool-choice",
+        "--tool-call-parser", "parser_name",
+        "--reasoning-parser", "parser_name",
+        "--max-cudagraph-capture-size", "128",
+        "--compilation-config", '{"cudagraph_mode": "FULL_AND_PIECEWISE"}',
+        "--served-model-name", "alias1", "alias2"
+      ],
+      "env": {
+        "CUDA_VISIBLE_DEVICES": "0,1,2,3,4,5,6,7",
+        "VLLM_ATTENTION_BACKEND": "FLASHINFER",
+        "VLLM_ALLOW_LONG_MAX_MODEL_LEN": "1"
+      }
+    },
+    "performance_summary": {
+      "throughput": "N tok/s",
+      "latency_p50": "N ms",
+      "latency_p99": "N ms"
+    },
+    "config_notes": [
+      "Why each flag was chosen"
+    ]
+  }

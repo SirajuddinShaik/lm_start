@@ -254,6 +254,12 @@ def run_setup(
 
     console.print("\n[bold]Running setup phases...[/bold]")
 
+    # Split phases: "fast" phases run inside a progress bar; "heavy" phases
+    # produce their own Rich output (long-running vLLM processes) so run after.
+    HEAVY_PHASES = {"Smoke Test", "Extract vLLM Config", "Optimize", "Finalize"}
+    fast_phases = [(n, f) for n, f in phases if n not in HEAVY_PHASES]
+    heavy_phases = [(n, f) for n, f in phases if n in HEAVY_PHASES]
+
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -263,9 +269,9 @@ def run_setup(
         TimeRemainingColumn(),
         console=console,
     ) as progress:
-        task = progress.add_task("[cyan]Setup Progress", total=len(phases))
+        task = progress.add_task("[cyan]Setup Progress", total=len(fast_phases))
 
-        for phase_name, phase_func in phases:
+        for phase_name, phase_func in fast_phases:
             progress.update(task, description=f"[cyan]{phase_name}...")
 
             try:
@@ -279,19 +285,38 @@ def run_setup(
                             or "already completed" in result.message.lower()
                         ):
                             console.print(
-                                f"  [green]✓[/green] {phase_name}: {result.message}"
+                                f"  [green]\u2713[/green] {phase_name}: {result.message}"
                             )
                         else:
-                            console.print(f"  [green]✓[/green] {result.message}")
+                            console.print(f"  [green]\u2713[/green] {result.message}")
                 else:
-                    console.print(f"\n[red]✗ Phase '{phase_name}' failed:[/red]")
+                    console.print(f"\n[red]\u2717 Phase '{phase_name}' failed:[/red]")
                     console.print(f"  {result.message}")
                     return 1
 
             except Exception as e:
-                console.print(f"\n[red]✗ Phase '{phase_name}' error:[/red]")
+                console.print(f"\n[red]\u2717 Phase '{phase_name}' error:[/red]")
                 console.print(f"  {str(e)}")
                 return 1
+
+    # Heavy phases run outside the progress bar
+    for phase_name, phase_func in heavy_phases:
+        console.rule(f"[bold]{phase_name}[/bold]", style="dim")
+        try:
+            result = phase_func()
+
+            if result.success:
+                if result.message:
+                    console.print(f"  [green]✓[/green] {phase_name}: {result.message}")
+            else:
+                console.print(f"\n[red]✗ Phase '{phase_name}' failed:[/red]")
+                console.print(f"  {result.message}")
+                return 1
+
+        except Exception as e:
+            console.print(f"\n[red]✗ Phase '{phase_name}' error:[/red]")
+            console.print(f"  {str(e)}")
+            return 1
 
     console.print("\n")
     console.print(

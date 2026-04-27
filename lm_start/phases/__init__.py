@@ -11,6 +11,10 @@ import time
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
+from rich.console import Console as _Console
+
+_con = _Console()
+
 from lm_start.state_manager import StateManager, Phase, PhaseStatus, PHASE_ORDER
 
 # Import script modules for direct execution (pip package compatible)
@@ -125,15 +129,15 @@ def run_script(
 
 
 def run_agentic_recovery(model_dir: str, phase: str, error_msg: str) -> bool:
-    agent_script = SCRIPT_DIR / "opencode_phase_agent.py"
-    if not agent_script.exists():
-        return False
+    import sys
+    cmd = [sys.executable, "-m", "lm_start.scripts.opencode_phase_agent", model_dir, phase, error_msg]
     result = subprocess.run(
-        ["python3", str(agent_script), model_dir, phase, error_msg],
+        cmd,
         capture_output=True,
         text=True,
         env={**os.environ, **get_credentials_env()},
     )
+    
     return result.returncode == 0
 
 
@@ -287,9 +291,9 @@ def phase_download(
 
     if not result.get("success", False):
         error_msg = result.get("error", f"Download failed for {model_id}")
-        print("[INFO] Attempting agentic recovery for download...")
+        _con.print("  [cyan]Agentic recovery for download...[/cyan]")
         if run_agentic_recovery(model_dir, "download", error_msg):
-            print("[INFO] OpenCode agent recovery succeeded, retrying download...")
+            _con.print("  [green]✓[/green]  Agent recovery succeeded — retrying download")
             retry_result = download_model_func(
                 model_id=model_id,
                 model_dir=model_dir,
@@ -349,9 +353,9 @@ def phase_venv(
         return PhaseResult(True, "Virtual environment created")
     else:
         error_msg = f"Virtual environment creation failed"
-        print("[INFO] Attempting agentic recovery for venv...")
+        _con.print("  [cyan]Agentic recovery for venv...[/cyan]")
         if run_agentic_recovery(model_dir, "venv", error_msg):
-            print("[INFO] OpenCode agent recovery succeeded, retrying venv creation...")
+            _con.print("  [green]✓[/green]  Agent recovery succeeded — retrying venv creation")
             retry_result = subprocess.run(
                 ["bash", str(venv_script)] + args,
                 capture_output=True,
@@ -403,13 +407,25 @@ def phase_smoke_test(
 
         system = yaml.safe_load(open(system_config_path))
         smoke = system.get("smoke_test", {})
+
+        # Use actual GPU count so large models don't OOM with TP=1
+        device_config_file = model_path / ".llm-context" / "model-context" / "device_config.json"
+        tp_size = 1
+        if device_config_file.exists():
+            try:
+                import json as _json
+                dc = _json.load(open(device_config_file))
+                tp_size = dc.get("gpus", {}).get("count", 1)
+            except Exception:
+                pass
+
         config = {
             "smoke_test": {
                 "vllm_args": smoke.get(
                     "vllm_args",
                     {
                         "max_model_len": 1024,
-                        "tensor_parallel_size": 1,
+                        "tensor_parallel_size": tp_size,
                         "dtype": "auto",
                         "trust_remote_code": True,
                         "enable_chunked_prefill": True,
@@ -421,12 +437,14 @@ def phase_smoke_test(
                 "start_port": smoke.get("start_port", 29500),
             }
         }
+        # Ensure tensor_parallel_size is set correctly even if vllm_args came from system.yaml
+        config["smoke_test"]["vllm_args"]["tensor_parallel_size"] = tp_size
         yaml.dump(config, open(smoke_config, "w"), default_flow_style=False)
-        print("[INFO] Created smoke_test_config.yaml")
+        _con.print(f"  [dim]Created smoke_test_config.yaml (TP={tp_size})[/dim]")
 
     model_info_file = model_path / ".llm-context" / "model-context" / "model_info.json"
     if not model_info_file.exists():
-        print("[ERROR] model_info.json not found in .llm-context/model-context/")
+        _con.print("  [red]✗[/red]  model_info.json not found")
         if runner:
             runner.fail_phase(Phase.SMOKE_TEST, "model_info.json missing")
         return PhaseResult(
@@ -492,8 +510,8 @@ def phase_smoke_test(
                 break
         test_port += 1
 
-    print(f"[INFO] Using test port: {test_port}")
-    print(f"[INFO] Running vLLM serve smoke test (timeout: {timeout}s)...")
+    _con.print(f"  [dim]Using port {test_port}[/dim]")
+    _con.print(f"  [dim]Running smoke test (timeout: {timeout}s)...[/dim]")
 
     # Run smoke test
     env = {
@@ -506,11 +524,31 @@ def phase_smoke_test(
     healthy = False
 
     def run_one_test(port):
-        """Run one smoke test attempt."""
+        """Run one smoke test attempt, reloading config fresh from disk."""
+        import yaml as _yaml
+        # Reload config each time so agent fixes are picked up
+        if smoke_config.exists():
+            _smoke_settings = _yaml.safe_load(open(smoke_config)).get("smoke_test", {})
+        else:
+            _smoke_settings = {}
+        _vllm_args_dict = _smoke_settings.get("vllm_args", {})
+        _vllm_args_list = []
+        for k, v in _vllm_args_dict.items():
+            flag = f"--{k.replace('_', '-')}"
+            if isinstance(v, bool):
+                if v:
+                    _vllm_args_list.append(flag)
+                else:
+                    _vllm_args_list.append(f"--no-{k.replace('_', '-')}")
+            elif v == "" or v is None:
+                _vllm_args_list.append(flag)
+            else:
+                _vllm_args_list.extend([flag, str(v)])
+
         nonlocal healthy
         cmd = (
             [str(vllm_bin), "serve", actual_model_id]
-            + vllm_args_list
+            + _vllm_args_list
             + ["--port", str(port)]
         )
 
@@ -525,14 +563,14 @@ def phase_smoke_test(
             time.sleep(poll_interval)
 
             if process.poll() is not None:
-                print("[WARN] vLLM process died during startup")
+                _con.print(f"  [yellow]⚠[/yellow]  vLLM process died during startup")
                 break
 
             try:
                 elapsed = (i + 1) * poll_interval
                 response = requests.get(f"http://localhost:{port}/health", timeout=1)
                 if response.status_code == 200:
-                    print(f"[OK] vLLM healthy after {elapsed}s")
+                    _con.print(f"  [green]✓[/green]  vLLM healthy  [dim]({elapsed}s)[/dim]")
                     healthy = True
                     break
             except:
@@ -556,19 +594,17 @@ def phase_smoke_test(
     while not healthy and agent_attempt < max_agent_attempts:
         error_log = smoke_log.read_text() if smoke_log.exists() else "No log file"
         agent_attempt += 1
-        print(
-            f"[INFO] Smoke test failed - calling agentic recovery (attempt {agent_attempt}/{max_agent_attempts})..."
+        _con.print(
+            f"  [yellow]\u26a0[/yellow]  Smoke test failed \u2014 agentic recovery [dim](attempt {agent_attempt}/{max_agent_attempts})[/dim]"
         )
 
         if run_agentic_recovery(model_dir, "smoke_test", error_log[:1000]):
-            print(
-                "[INFO] OpenCode agent recovery succeeded, retrying with fixed config..."
-            )
+            _con.print("  [green]\u2713[/green]  Agent recovery succeeded \u2014 retrying smoke test")
             test_port += 1
             healthy = run_one_test(test_port)
             if healthy:
-                print(
-                    f"[OK] vLLM smoke test passed after agent fix (attempt {agent_attempt})!"
+                _con.print(
+                    f"  [green]\u2713[/green]  Smoke test passed  [dim](after agent fix, attempt {agent_attempt})[/dim]"
                 )
                 if runner:
                     runner.complete_phase(Phase.SMOKE_TEST)
@@ -577,11 +613,11 @@ def phase_smoke_test(
                     f"vLLM smoke test passed after agent fix (attempt {agent_attempt})",
                 )
             else:
-                print(
-                    f"[WARN] Smoke test still failed after agent recovery attempt {agent_attempt}"
+                _con.print(
+                    f"  [yellow]\u26a0[/yellow]  Still failing after agent recovery attempt {agent_attempt}"
                 )
         else:
-            print("[WARN] Agentic recovery could not fix the issue")
+            _con.print("  [yellow]\u26a0[/yellow]  Agentic recovery could not fix the issue")
             break
 
     if not healthy:
@@ -589,7 +625,7 @@ def phase_smoke_test(
             runner.fail_phase(Phase.SMOKE_TEST, "Max agent attempts reached")
         return PhaseResult(False, "vLLM smoke test failed - max agent attempts reached")
 
-    print("[OK] vLLM smoke test passed!")
+    _con.print("  [green]✓[/green]  Smoke test passed")
     if runner:
         runner.complete_phase(Phase.SMOKE_TEST)
     return PhaseResult(True, "vLLM smoke test passed")
@@ -612,7 +648,7 @@ def phase_extract_vllm_config(
         runner
         and runner.get_phase_status(Phase.EXTRACT_VLLM_CONFIG) == PhaseStatus.FAILED
     ):
-        print("[INFO] Retrying previously failed extraction...")
+        _con.print("  [dim]Retrying previously failed extraction...[/dim]")
     venv_path = Path(model_dir) / ".venv"
     if not venv_path.exists():
         if runner:
@@ -628,7 +664,7 @@ def phase_extract_vllm_config(
     venv_python = Path(model_dir) / ".venv" / "bin" / "python"
     if not venv_python.exists():
         error_msg = f"venv Python not found: {venv_python}"
-        print(f"[ERROR] {error_msg}")
+        _con.print(f"  [red]✗[/red]  {error_msg}")
         if runner:
             runner.fail_phase(Phase.EXTRACT_VLLM_CONFIG, error_msg)
         return PhaseResult(False, error_msg)
@@ -656,7 +692,7 @@ def phase_extract_vllm_config(
 
     if result.returncode != 0:
         error_msg = result.stderr or "Extraction failed"
-        print(f"[ERROR] vLLM config extraction failed: {error_msg[:200]}...")
+        _con.print(f"  [red]✗[/red]  vLLM config extraction failed: {error_msg[:200]}")
         if runner:
             runner.fail_phase(Phase.EXTRACT_VLLM_CONFIG, error_msg)
         return PhaseResult(False, f"Extraction failed: {error_msg[:200]}")
@@ -665,22 +701,22 @@ def phase_extract_vllm_config(
         result_data = json.loads(result.stdout)
     except json.JSONDecodeError:
         error_msg = "Failed to parse extraction output"
-        print(f"[ERROR] {error_msg}")
+        _con.print(f"  [red]✗[/red]  {error_msg}")
         if runner:
             runner.fail_phase(Phase.EXTRACT_VLLM_CONFIG, error_msg)
         return PhaseResult(False, error_msg)
 
     if not result_data.get("success", False):
         error_msg = result_data.get("error", "Unknown error")
-        print(f"[ERROR] vLLM config extraction failed: {error_msg[:200]}...")
-        print("[INFO] Agentic recovery will attempt to fix this...")
+        _con.print(f"  [red]✗[/red]  vLLM config extraction failed: {error_msg[:200]}")
+        _con.print("  [cyan]Agentic recovery will attempt to fix this...[/cyan]")
         if runner:
             runner.fail_phase(Phase.EXTRACT_VLLM_CONFIG, error_msg)
         return PhaseResult(False, f"Extraction failed: {error_msg[:200]}")
 
     # Also extract vLLM flags (like shell script)
     # Must use model's venv Python, not lm-start's
-    print("[INFO] Extracting available vLLM flags...")
+    _con.print("  [dim]Extracting vLLM flags...[/dim]")
 
     model_venv_python = Path(model_dir) / ".venv" / "bin" / "python"
     extract_script = Path(__file__).parent.parent / "scripts" / "extract_vllm_flags.py"
@@ -699,24 +735,24 @@ def phase_extract_vllm_config(
             timeout=60,
         )
         if result.returncode == 0:
-            print("[OK] vLLM flags extracted successfully")
+            _con.print("  [green]✓[/green]  vLLM flags extracted")
         else:
             error_msg = result.stderr[:100] if result.stderr else "Unknown error"
-            print(f"[WARN] vLLM flag extraction failed: {error_msg}")
+            _con.print(f"  [yellow]⚠[/yellow]  Flag extraction: {error_msg}")
     else:
-        print(f"[WARN] Cannot extract flags: venv or script not found")
+        _con.print("  [yellow]⚠[/yellow]  Cannot extract flags: venv or script not found")
 
     # Extract comprehensive vLLM flags as YAML
-    print("[INFO] Extracting comprehensive vLLM flags...")
+    _con.print("  [dim]Extracting comprehensive vLLM flags...[/dim]")
     try:
         from lm_start.scripts.extract_vllm_flags import extract_vllm_flags_func
         result = extract_vllm_flags_func(model_dir)
         if result.get("success"):
-            print(f"[OK] Extracted {result.get('flags_count', 0)} flags to vllm_flags.yaml")
+            _con.print(f"  [green]\u2713[/green]  Extracted {result.get('flags_count', 0)} flags to vllm_flags.yaml")
         else:
-            print(f"[WARN] Flag extraction: {result.get('error', 'unknown error')}")
+            _con.print(f"  [yellow]\u26a0[/yellow]  Flag extraction: {result.get('error', 'unknown error')}")
     except Exception as e:
-        print(f"[WARN] Failed to extract vLLM flags: {e}")
+        _con.print(f"  [yellow]\u26a0[/yellow]  Failed to extract vLLM flags: {e}")
 
     sys.path.insert(0, str(SCRIPT_DIR))
     from utils.model_utils import get_model_cache_path
@@ -775,7 +811,7 @@ def phase_extract_vllm_config(
         file_list = ", ".join([f.name for f in files_to_copy_to_hub[:5]])
         if len(files_to_copy_to_hub) > 5:
             file_list += f", +{len(files_to_copy_to_hub) - 5} more"
-        print(f"[OK] hub_configs: {len(files_to_copy_to_hub)} files ({file_list})")
+        _con.print(f"  [dim]hub_configs: {len(files_to_copy_to_hub)} files ({file_list})[/dim]")
 
     if runner:
         runner.complete_phase(Phase.EXTRACT_VLLM_CONFIG)
@@ -802,15 +838,15 @@ def phase_generate_config(
     result = generate_pm2_config_func(model_dir=model_dir)
     if not result.get("success", False):
         error_msg = result.get("error", "Unknown error")
-        print(f"[WARN] Failed to generate PM2 config: {error_msg[:100]}")
-        print("[INFO] Continuing anyway...")
+        _con.print(f"  [yellow]⚠[/yellow]  PM2 config failed: {error_msg[:100]}")
+        _con.print("  [dim]Continuing anyway...[/dim]")
 
     # Generate model.sh script
     result = generate_model_sh_func(model_dir=model_dir)
     if not result.get("success", False):
         error_msg = result.get("error", "Unknown error")
-        print(f"[WARN] Failed to generate model.sh: {error_msg[:100]}")
-        print("[INFO] Continuing anyway...")
+        _con.print(f"  [yellow]⚠[/yellow]  model.sh failed: {error_msg[:100]}")
+        _con.print("  [dim]Continuing anyway...[/dim]")
 
     # Make model.sh executable
     model_sh = Path(model_dir) / "model.sh"
@@ -849,14 +885,13 @@ def phase_optimize(
     attempt = 0
     last_error = None
 
-    print("\n" + "━" * 60)
-    print("🔬 OPTIMIZATION PHASE")
-    print("━" * 60)
+    _con.print()
+    _con.rule("[bold]Optimization Phase[/bold]")
+    _con.print()
 
     while attempt < max_attempts:
         attempt += 1
-        print(f"\n┌─ Optimization Attempt {attempt}/{max_attempts}")
-        print("│")
+        _con.print(f"  [dim]Attempt {attempt}/{max_attempts}[/dim]")
 
         result = optimize_vllm_config(
             model_dir=model_dir,
@@ -868,48 +903,32 @@ def phase_optimize(
         )
 
         if result.get("success", False):
-            print("│")
-            print("│  ✅ Optimization successful!")
-            print("│")
-            print("└─ Complete")
-            print("\n" + "━" * 60)
+            _con.print("  [green]✓[/green]  Optimization successful")
+            _con.rule(style="dim")
             if runner:
                 runner.complete_phase(Phase.OPTIMIZE)
             return PhaseResult(True, "Configuration optimized")
 
-        print(f"│")
-        print(f"│  ⚠️  Attempt {attempt} failed")
+        _con.print(f"  [yellow]⚠[/yellow]  Attempt {attempt} failed")
 
         last_error = result.get("error", "Unknown error")
         error_preview = str(last_error)[-500:] if last_error else "No error output"
-        print(f"│")
-        print(f"│  📋 Error details:")
+        _con.print(f"  [dim]Error:[/dim]")
         for line in error_preview.split("\n")[-5:]:
             if line.strip():
-                print(f"│    {line[:70]}{'...' if len(line) > 70 else ''}")
-        print(f"│")
-        print(
-            f"│  🔍 Run: cat /data/models/*/google-gemma-4-31B-it/.runs/run_*/result.json"
-        )
+                _con.print(f"  [dim]  {line[:80]}{'...' if len(line) > 80 else ''}[/dim]")
 
-        # Agent failure - try recovery
         if attempt < max_attempts:
-            print("│")
-            print("│  🔄 Running agentic recovery...")
+            _con.print("  [cyan]Agentic recovery...[/cyan]")
             if run_agentic_recovery(model_dir, "optimize", str(last_error)[:1000]):
-                print("│  ✅ Recovery succeeded, retrying...")
+                _con.print("  [green]✓[/green]  Recovery succeeded, retrying...")
             else:
-                print("│  ❌ Recovery failed, stopping retries")
-                print("│")
-                print("└─ Aborted")
+                _con.print("  [red]✗[/red]  Recovery failed")
                 break
         else:
-            print(f"│")
-            print(f"│  ⚠️  Max attempts ({max_attempts}) reached")
-            print("│")
-            print("└─ Continuing with warnings")
+            _con.print(f"  [yellow]⚠[/yellow]  Max attempts ({max_attempts}) reached")
 
-    print("\n" + "━" * 60)
+    _con.rule(style="dim")
     if runner:
         runner.complete_phase(Phase.OPTIMIZE)
     return PhaseResult(True, "Optimization completed with warnings")
@@ -951,7 +970,7 @@ def phase_finalize(
 
             dest_file = model_dir_path / readme_file.name
             shutil.copy2(readme_file, dest_file)
-            print(f"[OK] Copied {readme_file.name} from HF cache to model root")
+            _con.print(f"  [dim]Copied {readme_file.name} from HF cache[/dim]")
     else:
         readme_path = model_dir_path / "README.md"
         readme_path.write_text(
@@ -978,7 +997,7 @@ __pycache__/
 
         shutil.copy2(deploy_script, Path(model_dir) / "deploy.py")
         (Path(model_dir) / "deploy.py").chmod(0o755)
-        print("[OK] Copied deploy.py")
+        _con.print("  [dim]Copied deploy.py[/dim]")
 
     if runner:
         runner.complete_phase(Phase.FINALIZE)

@@ -38,7 +38,12 @@ class OptimizationHistory:
         if self.history_file.exists():
             with open(self.history_file) as f:
                 return json.load(f)
-        return {
+        # Bootstrap from .runs/ directory if history file doesn't exist yet
+        return self._bootstrap_from_runs()
+
+    def _bootstrap_from_runs(self) -> Dict:
+        """Build history from existing .runs/ result.json files."""
+        history = {
             "runs": [],
             "best_context": 0,
             "best_config": {},
@@ -47,6 +52,36 @@ class OptimizationHistory:
             "is_satisfied": False,
             "total_attempts": 0,
         }
+        runs_dir = self.history_file.parent / ".runs"
+        if not runs_dir.exists():
+            return history
+        for run_dir in sorted(runs_dir.iterdir()):
+            result_file = run_dir / "result.json"
+            config_file = run_dir / "config.json"
+            if not result_file.exists():
+                continue
+            try:
+                result = json.loads(result_file.read_text())
+                config = json.loads(config_file.read_text()) if config_file.exists() else {}
+                success = result.get("success", False)
+                max_len = config.get("max_model_len", 0)
+                history["runs"].append({
+                    "timestamp": result.get("timestamp_started", ""),
+                    "target": max_len,
+                    "success": success,
+                    "config": config,
+                    "error": result.get("error", ""),
+                    "run_id": run_dir.name,
+                })
+                history["total_attempts"] += 1
+                if success and max_len > history["best_context"]:
+                    history["best_context"] = max_len
+                    history["best_config"] = config.copy()
+                if max_len and max_len not in history["attempted_targets"]:
+                    history["attempted_targets"].append(max_len)
+            except Exception:
+                continue
+        return history
 
     def save(self):
         with open(self.history_file, "w") as f:
@@ -181,20 +216,12 @@ def optimize_vllm_config(
     # Load optimization history
     history = OptimizationHistory(model_dir_path)
 
-    # Check if already optimized
+    # Check if already optimized (informational only — never auto-stop)
     is_optimized, reason = history.is_already_optimized(min_context)
-    if is_optimized and not force:
-        print(f"\n[INFO] Model appears to be already optimized.")
-        print(f"       {reason}")
-        print(f"\nUse force=True to re-optimize anyway.")
-        result["success"] = True
-        result["config"] = history.history.get("best_config", {})
-        result["is_satisfied"] = True
-        return result
-    elif is_optimized and force:
-        print(f"\n[INFO] Forcing re-optimization despite: {reason}")
+    if is_optimized:
+        print(f"  Previously optimized ({reason}) — continuing to verify")
     else:
-        print(f"\n[INFO] {reason}")
+        print(f"  {reason}")
 
     # Get config
     config = get_config()
@@ -212,15 +239,14 @@ def optimize_vllm_config(
     # Analyze previous patterns
     if history.history["runs"]:
         print(
-            f"\n[ANALYSIS] Reviewing {len(history.history['runs'])} previous attempts..."
+            f"  Previously optimized: reviewing {len(history.history['runs'])} previous run(s)..."
         )
         analysis = history.analyze_patterns()
         if analysis["recommendation"]:
-            print(f"           Recommendation: {analysis['recommendation']}")
+            print(f"  Recommendation: {analysis['recommendation']}")
 
     start_time = time.time()
 
-    opt_result = None
     if agentic:
         orchestrator = OpenCodeAgenticOrchestrator(
             model_dir=str(model_dir),
@@ -229,14 +255,14 @@ def optimize_vllm_config(
             force=force,
         )
         orchestrator.run()
-        result = AgentResult(
-            success=True,
-            message="Agentic optimization complete",
-            metadata={
-                "best_config": history.history.get("best_config", {}),
-                "total_tests": 0,
-            },
-        )
+        # Reload history to pick up runs created during orchestration
+        history = OptimizationHistory(model_dir_path)
+        best_cfg = history.history.get("best_config") or base_config
+        is_sat = history.history.get("is_satisfied", False)
+        result["success"] = True
+        result["config"] = best_cfg
+        result["is_satisfied"] = is_sat
+        return result
     else:
         agent = ExperimentAgentV2(
             model_dir=str(model_dir),
@@ -244,109 +270,26 @@ def optimize_vllm_config(
             verbose=verbose,
             hf_home=config.paths.hf_home,
         )
-        result = agent.run({})
+        agent_result = agent.run({})
 
     elapsed = time.time() - start_time
 
-    # Record result
-    best_config = result.metadata.get("best_config", base_config)
-    best_throughput = result.metadata.get("best_throughput", 0)
-
-    # Get context from max_model_len (not context_length)
-    best_context = best_config.get("max_model_len", 0) if best_config else 0
+    # Record result (non-agentic path)
+    best_config = agent_result.metadata.get("best_config", base_config)
+    best_context = int(best_config.get("max_model_len", 0)) if best_config else 0
+    improvements_made = agent_result.success or history.history["best_context"] > 0
 
     if best_config:
-        history.add_run(
-            target=best_context,
-            success=result.success,
-            config=best_config,
-            error="",
-        )
-        improvements_made = result.success or history.history["best_context"] > 0
-
-    if result.success:
-        print(f"\n[SUCCESS] Optimization complete! ({elapsed:.1f}s)")
-        print(f"          Tests run: {result.metadata.get('total_tests', 0)}")
-        print(f"          Best throughput: {best_throughput} tokens/sec")
-    else:
-        print(f"\n[FAILED] Optimization did not improve ({elapsed:.1f}s)")
+        history.add_run(target=best_context, success=agent_result.success, config=best_config, error="")
 
     if best_context >= min_context:
         history.history["is_satisfied"] = True
         history.save()
 
-    # Final analysis
-    print(f"\n{'=' * 70}")
-    print(f"OPTIMIZATION COMPLETE")
-    print(f"{'=' * 70}")
-
-    print(f"\n[RESULTS]")
-    print(f"  Total attempts: {history.history['total_attempts']}")
-    print(f"  Best context: {history.history['best_context']}")
-    print(f"  Targets tried: {len(history.history['attempted_targets'])}")
-
-    if history.history["best_config"]:
-        print(f"\n[BEST CONFIGURATION]")
-        for key, value in history.history["best_config"].items():
-            print(f"  {key}: {value}")
-
-    output_file = model_dir / ".llm-context" / "model-context" / "optimized_config.json"
-    output_file.parent.mkdir(parents=True, exist_ok=True)
-
-    best_config = history.history["best_config"] or base_config
-
-    flag_config = {
-        "tensor_parallel_size": best_config.get("tensor_parallel_size", 1),
-        "max_model_len": history.history["best_context"] or 4096,
-        "gpu_memory_utilization": best_config.get("gpu_memory_utilization", 0.9),
-    }
-
-    if best_config.get("dtype") and best_config.get("dtype") != "auto":
-        flag_config["dtype"] = best_config["dtype"]
-    if best_config.get("enforce_eager"):
-        flag_config["enforce_eager"] = True
-    if best_config.get("trust_remote_code"):
-        flag_config["trust_remote_code"] = True
-
-    validated_args = validate_vllm_flags(flag_config, model_dir=str(model_dir))
-    vllm_args = ["serve", model_id] + validated_args
-
-    with open(output_file, "w") as f:
-        json.dump(
-            {
-                "model_id": model_id,
-                "vllm_args": vllm_args,
-                "environment": {
-                    "CUDA_VISIBLE_DEVICES": config.device.gpu.visible_devices,
-                    "HF_HOME": config.paths.hf_home,
-                    "VLLM_ATTENTION_BACKEND": config.environment.get(
-                        "VLLM_ATTENTION_BACKEND", "FLASHINFER"
-                    ),
-                },
-                "tensor_parallel_size": best_config.get("tensor_parallel_size", 1),
-                "port": config.vllm_defaults.port,
-                "host": config.vllm_defaults.host,
-                "max_model_len": history.history["best_context"] or 4096,
-                "best_context": history.history["best_context"],
-                "is_satisfied": history.history["is_satisfied"],
-                "total_attempts": history.history["total_attempts"],
-                "timestamp": datetime.now().isoformat(),
-            },
-            f,
-            indent=2,
-        )
-
-    print(f"\n[OUTPUT] Config saved to: {output_file}")
-
-    if history.history["is_satisfied"]:
-        print(f"\n✓ SATISFIED: Achieved target context {min_context}")
-        return 0
-    elif improvements_made:
-        print(f"\n⚠ PARTIAL: Made improvements but didn't reach {min_context}")
-        return 0
-    else:
-        print(f"\n✗ NO IMPROVEMENT: Could not improve beyond current config")
-        return 1
+    result["success"] = agent_result.success
+    result["config"] = best_config
+    result["is_satisfied"] = history.history["is_satisfied"]
+    return result
 
 
 if __name__ == "__main__":

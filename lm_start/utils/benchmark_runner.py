@@ -105,15 +105,16 @@ class BenchmarkRunner:
 
     def log(self, message: str, level: str = "info"):
         """Log a message."""
-        prefix = "[Benchmark]"
+        from rich.console import Console as _C
+        _c = _C()
         if level == "error":
-            print(f"{prefix} ERROR: {message}")
+            _c.print(f"  [red]✗[/red]  {message}")
         elif level == "warning":
-            print(f"{prefix} WARN: {message}")
+            _c.print(f"  [yellow]⚠[/yellow]  {message}")
         elif level == "success":
-            print(f"{prefix} ✓ {message}")
+            _c.print(f"  [green]✓[/green]  {message}")
         else:
-            print(f"{prefix} {message}")
+            _c.print(f"  [dim]{message}[/dim]")
 
     def run_serve_benchmark(
         self,
@@ -510,7 +511,6 @@ def save_benchmark_results(results: Dict[str, Any], output_path: Path):
     """Save benchmark results to JSON file."""
     with open(output_path, "w") as f:
         json.dump(results, f, indent=2)
-    print(f"[Benchmark] Results saved to {output_path}")
 
 
 def load_benchmark_results(path: Path) -> Optional[Dict[str, Any]]:
@@ -519,7 +519,7 @@ def load_benchmark_results(path: Path) -> Optional[Dict[str, Any]]:
         with open(path) as f:
             return json.load(f)
     except Exception as e:
-        print(f"[Benchmark] Failed to load results: {e}")
+        print(f"  ⚠  Failed to load benchmark results: {e}")
         return None
 
 

@@ -4,7 +4,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from .constants import LM_START_DIR
+from lm_start.constants import LM_START_DIR
 
 OPENCODE_INSTALL_DIR = LM_START_DIR / "opencode"
 OPENCODE_BIN_DIR = OPENCODE_INSTALL_DIR / "bin"

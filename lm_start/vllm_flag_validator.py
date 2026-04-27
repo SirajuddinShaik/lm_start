@@ -393,9 +393,10 @@ class VLLMFlagValidator:
         result = self.validate_and_format(config, remove_invalid=True)
 
         if result.warnings:
-            print("Flag validation warnings:", file=sys.stderr)
+            from rich.console import Console as _C
+            _c = _C(stderr=True)
             for warning in result.warnings:
-                print(f"  ⚠ {warning}", file=sys.stderr)
+                _c.print(f"  [yellow]⚠[/yellow]  {warning}")
 
         return result.valid_args
 

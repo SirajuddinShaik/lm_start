@@ -98,9 +98,9 @@ class HardwareDetector:
         if visible_devices_str:
             try:
                 visible_indices = [int(x.strip()) for x in visible_devices_str.split(",")]
-                print(f"[INFO] Using CUDA_VISIBLE_DEVICES: {visible_indices}")
+                pass  # CUDA_VISIBLE_DEVICES applied
             except ValueError:
-                print(f"[WARN] Invalid CUDA_VISIBLE_DEVICES: {visible_devices_str}")
+                print(f"  ⚠  Invalid CUDA_VISIBLE_DEVICES: {visible_devices_str}")
 
         try:
             # Get GPU details

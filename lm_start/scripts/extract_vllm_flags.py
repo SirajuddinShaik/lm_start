@@ -25,8 +25,8 @@ def parse_flag_line(line: str) -> Optional[Dict[str, Any]]:
     """Parse a single flag line from vllm help."""
     line = line.strip()
 
-    # Pattern: --flag-name {choice1,choice2} or --flag-name VALUE
-    match = re.match(r"(--[\w-]+)(?:\s+\{([^}]+)\}|\s+([A-Z_\[\]\d]+))?", line)
+    # Pattern: --flag-name {choice1,choice2} or --flag-name VALUE (metavar, 2+ chars)
+    match = re.match(r"(--[\w-]+)(?:\s+\{([^}]+)\}|\s+([A-Z_\[\]\d]{2,}))?", line)
     if not match:
         return None
 
@@ -79,9 +79,15 @@ def parse_help_output(text: str) -> Dict[str, Dict[str, Any]]:
 
                     i += 1
 
+                # Infer choices for boolean flags that don't have {a,b,c} syntax
+                # Only trigger on explicit True/False defaults, NOT on "None"
+                choices = flag_info["choices"]
+                if choices is None and default is not None and default.lower() in ("true", "false"):
+                    choices = ["true", "false"]
+
                 flags[flag_name] = {
                     "cli_flag": flag_info["cli_flag"],
-                    "choices": flag_info["choices"],
+                    "choices": choices,
                     "default": default,
                     "help": " ".join(help_lines)[:200] if help_lines else "",
                     "arg_type": flag_info["arg_type"],
@@ -147,6 +153,71 @@ def categorize_flag(flag_name: str) -> str:
     return "misc"
 
 
+def _enrich_parser_choices(all_flags: Dict[str, Any], model_dir: str) -> None:
+    """Inject known choices for free-text parser flags that vLLM help doesn't enumerate."""
+    # Flags sourced from ParserManager.list_registered()
+    parser_flags = {
+        "reasoning_parser": ("vllm.reasoning", "ReasoningParserManager"),
+    }
+    for flag_name, (module, cls) in parser_flags.items():
+        if flag_name not in all_flags:
+            continue
+        choices = _get_registered_parsers_direct(model_dir, module, cls)
+        if choices:
+            all_flags[flag_name]["choices"] = choices
+
+    # Flags sourced from Enum members
+    enum_flags = {
+        "attention_backend": ("vllm.v1.attention.backends.registry", "AttentionBackendEnum"),
+    }
+    for flag_name, (module, cls) in enum_flags.items():
+        if flag_name not in all_flags:
+            continue
+        choices = _get_enum_members(model_dir, module, cls)
+        if choices:
+            all_flags[flag_name]["choices"] = choices
+
+
+def _get_registered_parsers_direct(model_dir: str, module: str, cls: str) -> Optional[List[str]]:
+    venv_python = Path(model_dir) / ".venv" / "bin" / "python"
+    code = f"""
+try:
+    from {module} import {cls} as M
+    print(','.join(M.list_registered()))
+except Exception:
+    print('')
+"""
+    try:
+        result = subprocess.run(
+            [str(venv_python), "-c", code],
+            capture_output=True, text=True, timeout=30,
+        )
+        names = [n.strip() for n in result.stdout.strip().split(",") if n.strip()]
+        return names if names else None
+    except Exception:
+        return None
+
+
+def _get_enum_members(model_dir: str, module: str, cls: str) -> Optional[List[str]]:
+    venv_python = Path(model_dir) / ".venv" / "bin" / "python"
+    code = f"""
+try:
+    from {module} import {cls} as E
+    print(','.join(e.name for e in E))
+except Exception:
+    print('')
+"""
+    try:
+        result = subprocess.run(
+            [str(venv_python), "-c", code],
+            capture_output=True, text=True, timeout=30,
+        )
+        names = [n.strip() for n in result.stdout.strip().split(",") if n.strip()]
+        return names if names else None
+    except Exception:
+        return None
+
+
 def extract_vllm_flags_func(
     model_dir: str, gpu_type: Optional[str] = None, profile: str = "balanced"
 ) -> Dict[str, Any]:
@@ -163,6 +234,9 @@ def extract_vllm_flags_func(
 
     if not all_flags:
         return {"success": False, "error": "No flags extracted"}
+
+    # Enrich parser flags with real choices from vLLM's manager registries
+    _enrich_parser_choices(all_flags, model_dir)
 
     # Categorize
     categorized = {}
@@ -208,6 +282,9 @@ def extract_vllm_flags_func(
                 "enable_prefix_caching",
             ],
         },
+        # Flat lookup: every flag by name — use this to find choices/defaults quickly
+        "all_flags": all_flags,
+        # Same data organised by category
         "flags_by_category": categorized,
     }
 

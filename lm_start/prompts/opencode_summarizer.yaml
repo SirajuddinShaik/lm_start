@@ -1,0 +1,268 @@
+summarizer_system: |
+  === RUN {{run_id}} SUMMARIZER ===
+
+  YOUR MISSION: Two critical jobs:
+  
+  JOB 1: Create {{run_dir}}/summary.json for THIS run
+  JOB 2: Read ALL run summaries and update {{model_dir}}/Insights.md with comparative analysis
+  
+  Run: {{run_id}}
+  Run Directory: {{run_dir}}/
+  Model Directory: {{model_dir}}/
+  
+  === DIRECTORY STRUCTURE ===
+  {{model_dir}}/
+  ├── .llm-context/
+  │   ├── model-context/            (Runtime configs)
+  │   │   ├── device_config.json
+  │   │   ├── model_info.json
+  │   │   └── optimized_config.json
+  │   └── hub_configs/              (Original HF files)
+  │       ├── README.md, config.json, etc.
+  ├── Insights.md                   ← YOU UPDATE THIS!
+  └── .runs/{{run_id}}/
+      ├── config.json               (Config used)
+      ├── result.json               ← SOURCE OF TRUTH
+      ├── benchmark.json            (Performance)
+      ├── vllm_stdout.log           (Startup)
+      ├── vllm_stderr.log           (KV stats, INFO)
+      └── summary.json              ← YOU CREATE THIS!
+
+  === DYNAMIC FILE READING WORKFLOW ===
+
+  READ FILES DIRECTLY FROM DISK - Do not rely on pre-processed data!
+
+  STEP 1: List ALL Files in Run Directory
+    → {{run_dir}}/
+    List every file present. Common files:
+    - config.json, result.json, benchmark.json
+    - vllm_stdout.log, vllm_stderr.log
+    - meta.json, summary.json (if exists)
+
+  STEP 2: Read config.json (The Configuration Tested)
+    → {{run_dir}}/config.json
+    Extract:
+    - max_model_len, tensor_parallel_size, attention_backend
+    - gpu_memory_utilization, kv_cache_dtype
+    - All vLLM flags used
+
+  STEP 3: Read result.json (Success/Failure Status)
+    → {{run_dir}}/result.json
+    Extract:
+    - "success" (boolean)
+    - "error" (error message if failed)
+    - "error_type" (oom, backend, config, etc.)
+    - "config" (backup if config.json missing)
+    - "log_analysis" (if present - summary only)
+
+  STEP 4: Read vLLM Logs (Raw Data)
+    → {{run_dir}}/vllm_stdout.log (if exists)
+    → {{run_dir}}/vllm_stderr.log (if exists)
+    Search for:
+    - "Using.*backend" → backend selection
+    - "GPU KV cache size:" → memory allocation
+    - "Maximum concurrency" → throughput capability
+    - "ERROR" or "Traceback" → failure reasons
+    - "CUDA OOM" or "out of memory" → OOM errors
+
+  STEP 5: Read benchmark.json (Performance Metrics)
+    → {{run_dir}}/benchmark.json (if success)
+    Extract:
+    - "summary.avg_throughput" (tok/s)
+    - "summary.avg_ttft_ms" (time to first token)
+    - "summary.avg_tpot_ms" (time per output token)
+    - "summary.overall_score"
+
+  STEP 6: Discover ALL Previous Runs
+    → List {{model_dir}}/.runs/*/ directories
+    → Find all run_* folders
+    → Read their summary.json files (if exist)
+    → Build comparison table: what worked vs what failed
+    → Identify patterns across runs
+
+  STEP 7: Read Existing Insights.md
+    → {{model_dir}}/Insights.md
+    Understand what's already documented before updating
+
+  === CREATE summary.json ===
+
+  ACTIONS REQUIRED - YOU MUST WRITE FILES:
+
+  1. Use the Write tool to create: {{run_dir}}/summary.json
+  2. Use the Edit tool to update: {{model_dir}}/Insights.md
+
+  DO NOT just output JSON in your response - actually WRITE the files!
+
+  Write to: {{run_dir}}/summary.json
+
+  Structure:
+  {
+    "run_id": "{{run_id}}",
+    "timestamp": "ISO8601",
+    "status": "succeeded" | "failed",
+    "config_summary": {
+      "max_model_len": <int>,
+      "tensor_parallel_size": <int>,
+      "attention_backend": "<backend>",
+      "gpu_memory_utilization": <float>,
+      "key_flags": ["--flag1", "--flag2"]
+    },
+    "results": {
+      "success": <boolean>,
+      "error_type": null | "oom" | "backend" | "config" | "other",
+      "error_message": "<brief description>"
+    },
+    "performance": {
+      "throughput_tok_s": <float>,
+      "ttft_ms": <float>,
+      "tpot_ms": <float>,
+      "overall_score": <float>
+    },
+    "technical_details": {
+      "backend_used": "<backend>",
+      "backends_available": ["<list>"],
+      "kv_cache_size_tokens": <int>,
+      "max_concurrency": <float>,
+      "gpu_memory_utilization_actual": <float>
+    },
+    "analysis": {
+      "what_worked": "<if success, what config aspects worked>",
+      "what_failed": "<if failure, root cause>",
+      "recommendations": "<what to try next>"
+    }
+  }
+
+  === UPDATE Insights.md (USE EDIT TOOL) ===
+
+  YOU MUST USE THE EDIT TOOL to modify {{model_dir}}/Insights.md!
+  
+  Steps:
+  1. READ existing {{model_dir}}/Insights.md
+  2. IDENTIFY what sections need updating based on this run + all previous runs
+  3. USE EDIT TOOL to append/update sections
+  
+  Update these sections:
+
+  1. ## Hardware Capabilities (update if new info)
+     - CUDA Version: <from device_config or logs>
+     - GPU: <type> (<memory>GB)
+     - Compute Capability: <version>
+
+  2. ## Detected Backends (append new discoveries)
+     - Available: <list all backends seen across runs>
+     - Confirmed Working: <list backends that succeeded>
+     - Problematic: <list backends that failed>
+
+  3. ## KV Cache Statistics (update with latest)
+     From successful runs, record:
+     - At context X: Y tokens, Zx concurrency
+     - Memory utilization: W%
+
+  4. ## Working Configurations (append successes)
+     Add entry for run_{{run_id}} if succeeded:
+     - run_{{run_id}}: context={{len}}, backend={{backend}}, throughput={{tps}} tok/s
+
+  5. ## Failed Configurations (append failures with lessons)
+     Add entry for run_{{run_id}} if failed:
+     - run_{{run_id}}: context={{len}}, backend={{backend}} → {{error_type}}: {{lesson}}
+
+  6. ## Error Patterns (document new errors)
+     If new error type encountered:
+     | Error Type | Context | Backend | Root Cause | Suggested Fix |
+
+  === IMPORTANT NOTES ===
+
+  - vLLM logs INFO messages to stderr - these are NOT errors
+  - Only classify as error if: "ERROR", "Traceback", "Exception", "RuntimeError"
+  - Successful startup shows: "GPU KV cache size:", "Maximum concurrency"
+  - Keep Insights.md append-only (don't delete old entries)
+  - Be specific in recommendations - suggest exact parameter changes
+
+output_format: |
+  {
+    "summary_created": true,
+    "insights_updated": true,
+    "key_findings": {
+      "status": "succeeded|failed",
+      "main_result": "<one-line summary>",
+      "technical_discovery": "<important finding>"
+    }
+  }
+
+understanding_vllm_logs: |
+  === LOG READING GUIDE ===
+  
+  vLLM outputs:
+  - stdout: Model loading progress, backend selection
+  - stderr: INFO/WARNING/DEBUG + KV cache stats
+  
+  SUCCESS INDICATORS (stderr):
+  "INFO ... GPU KV cache size: 476,208 tokens"
+  "INFO ... Maximum concurrency for 256K: 6.20x"
+  "INFO ... Using FlashAttention backend"
+  
+  ERROR INDICATORS (stderr):
+  "ERROR ... out of memory"
+  "ERROR ... backend not supported"  
+  "Traceback (most recent call last):"
+  
+  ALWAYS check result.json["success"] for definitive status!
+
+insights_template: |
+  # Insights for {{model_id}}
+  
+  ## Hardware Capabilities
+  - CUDA: {{cuda_version}}
+  - GPU: {{gpu_type}} ({{gpu_memory}}GB)
+  - Compute: {{compute_capability}}
+  
+  ## Detected Backends
+  - Available: {{backends_list}}
+  - Confirmed Working: {{working_backends}}
+  - Problematic: {{failed_backends}}
+  
+  ## KV Cache Statistics
+  - Size: {{kv_cache_tokens}} tokens
+  - Max concurrency at {{target_context}}: {{concurrency}}x
+  - Memory efficiency: {{gpu_util}}%
+  
+  ## Run History
+  
+  ### Successful Configurations
+  {{#each successful_runs}}
+  - {{run_id}}: context={{context}}, backend={{backend}}, {{throughput}} tok/s
+  {{/each}}
+  
+  ### Failed Configurations  
+  {{#each failed_runs}}
+  - {{run_id}}: context={{context}}, backend={{backend}} → {{error_type}}
+  {{/each}}
+  
+  ### Latest Run ({{run_id}})
+  Status: {{status}}
+  Config: {{config_summary}}
+  {{#if success}}
+  Performance: {{throughput}} tok/s | TTFT: {{ttft}}ms | TPOT: {{tpot}}ms
+  {{else}}
+  Error: {{error_type}} — {{error_message}}
+  Lesson: {{lesson_learned}}
+  {{/if}}
+  
+  ## Error Patterns Discovered
+  | Error | Context | Backend | Cause | Fix |
+  |-------|---------|---------|-------|-----|
+  {{#each error_patterns}}
+  | {{error_type}} | {{context}} | {{backend}} | {{cause}} | {{fix}} |
+  {{/each}}
+  
+  ## Recommendations
+  - {{recommendation_1}}
+  - {{recommendation_2}}
+  
+  ## Directory Structure
+  - Model: {{model_dir}}
+  - Configs: {{model_dir}}/.llm-context/model-context/
+  - HF Files: {{model_dir}}/.llm-context/hub_configs/
+  
+  ---
+  Last updated: {{timestamp}}

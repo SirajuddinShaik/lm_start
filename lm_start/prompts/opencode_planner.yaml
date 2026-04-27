@@ -111,7 +111,7 @@ planner_system: |
     Then read: {{model_dir}}/.runs/run_*/result.json for each
     → Analyze what worked and what failed
 
-  STEP 6: ONLY AFTER READING ALL FILES → Generate config
+  STEP 6: ONLY AFTER READING ALL FILES → Generate config (try multiple things in a single run if you can justify it from your research)
   
   === VALIDATION CHECKLIST ===
   Before generating output, confirm:
@@ -297,6 +297,7 @@ output_format: |
           "enable_prefix_caching": true,
           "enforce_eager": false,
           "trust_remote_code": true,
+          "enable_reasoning": true | false,
           "enable_expert_parallel": true | false(better for MOE),
           "reasoning_parser": "<LOOKUP FROM vllm_flags.yaml or Insights.md - see parser selection guide above>",
           "enable_auto_tool_choice": true | false,

@@ -5,6 +5,7 @@ View and interact with opencode agent sessions from optimization runs.
 """
 
 import json
+import sqlite3
 import subprocess
 import sys
 from datetime import datetime
@@ -31,6 +32,59 @@ LM_START_PHASES = {
     "optimize",
     "finalize",
 }
+
+OPENCODE_DB = Path.home() / ".local" / "share" / "opencode" / "opencode.db"
+
+# Patterns to classify opencode sessions by title prefix
+TITLE_AGENT_MAP = {
+    "Planner-": ("planner", "optimize"),
+    "Summarizer-": ("summarizer", "optimize"),
+    "PhaseRecovery-smoke_test": ("recovery", "smoke_test"),
+    "PhaseRecovery-venv": ("recovery", "venv"),
+    "PhaseRecovery-download": ("recovery", "download"),
+    "PhaseRecovery-": ("recovery", "setup"),
+}
+
+
+def _classify_by_title(title: str) -> tuple:
+    """Return (agent_type, phase) from session title, or (None, None)."""
+    if not title:
+        return None, None
+    for prefix, (agent_type, phase) in TITLE_AGENT_MAP.items():
+        if title.startswith(prefix):
+            return agent_type, phase
+    return None, None
+
+
+def _query_opencode_db_for_model(model_dir: Path) -> list:
+    """Pull sessions from opencode's SQLite DB for a given model directory."""
+    if not OPENCODE_DB.exists():
+        return []
+    results = []
+    try:
+        conn = sqlite3.connect(f"file:{OPENCODE_DB}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT id, title, time_created FROM session WHERE directory = ? ORDER BY time_created DESC",
+            (str(model_dir),),
+        ).fetchall()
+        conn.close()
+        for row in rows:
+            title = row["title"] or ""
+            agent_type, phase = _classify_by_title(title)
+            ts = datetime.fromtimestamp(row["time_created"] / 1000).isoformat()
+            results.append({
+                "session_id": row["id"],
+                "agent_type": agent_type or "imported",
+                "phase": phase or "-",
+                "title": title,
+                "timestamp": ts,
+                "model_dir": str(model_dir),
+                "_source": "opencode_db",
+            })
+    except Exception:
+        pass
+    return results
 
 app = typer.Typer(help="Manage lm-start agent sessions")
 console = Console()
@@ -176,26 +230,61 @@ def find_all_sessions(lmstart_only: bool = True) -> list:
         if not model_dir.is_dir():
             continue
 
+        # 1. Load from sessions.json (explicit records saved by orchestrator)
         sessions_file = model_dir / ".sessions" / "sessions.json"
         if sessions_file.exists():
-            with open(sessions_file) as f:
-                model_sessions = json.load(f)
+            try:
+                with open(sessions_file) as f:
+                    model_sessions = json.load(f)
                 for s in model_sessions:
                     s["model_name"] = model_dir.name
                     if lmstart_only and not is_lmstart_session(s):
                         continue
                     sessions.append(s)
+            except Exception:
+                pass
 
-    # Deduplicate: keep only the most recent entry for each session_id
+        # 2. Load from opencode DB (catches sessions the orchestrator missed)
+        for s in _query_opencode_db_for_model(model_dir):
+            s["model_name"] = model_dir.name
+            if lmstart_only and not is_lmstart_session(s):
+                continue
+            sessions.append(s)
+
+    # Deduplicate: sessions.json entries take priority (richer metadata) over DB entries
     seen_ids = {}
     for s in sessions:
         sid = s.get("session_id", "")
-        ts = s.get("timestamp", "")
-        if sid not in seen_ids or ts > seen_ids[sid].get("timestamp", ""):
+        if not sid:
+            continue
+        existing = seen_ids.get(sid)
+        if existing is None:
+            seen_ids[sid] = s
+        elif s.get("_source") != "opencode_db" and existing.get("_source") == "opencode_db":
+            # Prefer sessions.json entry over DB-only entry
             seen_ids[sid] = s
 
     sessions = list(seen_ids.values())
-    sessions.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+
+    def _parse_ts(s: dict):
+        ts = s.get("timestamp", "")
+        if not ts:
+            return datetime.min
+        for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(ts[:26], fmt)
+            except ValueError:
+                continue
+        # Handle M/D/YYYY or MM/DD/YYYY
+        try:
+            parts = ts.strip().split("/")
+            if len(parts) == 3:
+                return datetime(int(parts[2][:4]), int(parts[0]), int(parts[1]))
+        except Exception:
+            pass
+        return datetime.min
+
+    sessions.sort(key=_parse_ts, reverse=True)
     return sessions
 
 
@@ -229,7 +318,10 @@ def find_session_by_id(session_id: str) -> Optional[dict]:
 
 @app.command("list")
 def list_sessions(
-    model: Optional[str] = typer.Argument(None, help="Filter by model name"),
+    model_arg: Optional[str] = typer.Argument(None, help="Filter by model name (substring match)"),
+    model_opt: Optional[str] = typer.Option(
+        None, "--model", "-m", help="Filter by model name (substring match)"
+    ),
     agent_type: Optional[str] = typer.Option(
         None, "--type", "-t", help="Filter by agent type (planner/summarizer/recovery)"
     ),
@@ -241,35 +333,51 @@ def list_sessions(
         False, "--all", "-a", help="Show all sessions including non-lmstart"
     ),
 ):
-    """List lm-start agent sessions."""
+    """List lm-start agent sessions.
+
+    Filter by model using a positional arg or --model/-m flag:
+
+      lm-start session list kimi
+      lm-start session list --model kimi
+      lm-start session list gemma --type planner
+    """
+    model = model_opt or model_arg
     sessions = find_all_sessions(lmstart_only=not all_sessions)
 
+    active_filters = []
     if model:
         sessions = [
             s for s in sessions if model.lower() in s.get("model_name", "").lower()
         ]
+        active_filters.append(f"model={model}")
 
     if agent_type:
         sessions = [
             s for s in sessions if agent_type.lower() in s.get("agent_type", "").lower()
         ]
+        active_filters.append(f"type={agent_type}")
 
     if phase:
         sessions = [s for s in sessions if phase.lower() in s.get("phase", "").lower()]
+        active_filters.append(f"phase={phase}")
 
+    total_matched = len(sessions)
     sessions = sessions[:limit]
 
     if not sessions:
-        console.print("[yellow]No sessions found.[/yellow]")
+        filter_str = ", ".join(active_filters) if active_filters else "any"
+        console.print(f"[yellow]No sessions found matching: {filter_str}[/yellow]")
         return
 
-    table = Table(title=f"lm-start Sessions ({len(sessions)} shown)")
+    filter_label = f"  [{', '.join(active_filters)}]" if active_filters else ""
+    showing = f"{len(sessions)} of {total_matched}" if total_matched > len(sessions) else str(len(sessions))
+    table = Table(title=f"lm-start Sessions ({showing} shown){filter_label}")
     table.add_column("Session ID", style="cyan", no_wrap=True)
-    table.add_column("Type", style="green", width=10)
-    table.add_column("Model", style="blue", width=22)
-    table.add_column("Phase", style="magenta", width=10)
-    table.add_column("Details", style="yellow", width=25)
-    table.add_column("Time", style="dim", width=12)
+    table.add_column("Type", style="green", min_width=10)
+    table.add_column("Model", style="blue", min_width=24)
+    table.add_column("Phase", style="magenta", min_width=12)
+    table.add_column("Details", style="yellow", min_width=28)
+    table.add_column("Time", style="dim", min_width=14)
 
     for s in sessions:
         session_id = s.get("session_id", "-")
@@ -294,26 +402,39 @@ def list_sessions(
                 run_info = ", ".join(parts)
 
         timestamp = s.get("timestamp", "-")
-        if timestamp and len(timestamp) > 8:
-            try:
-                dt = datetime.fromisoformat(timestamp)
-                timestamp = dt.strftime("%m/%d %H:%M")
-            except:
-                pass
+        if timestamp and len(timestamp) > 4:
+            parsed = None
+            for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+                try:
+                    parsed = datetime.strptime(timestamp[:26], fmt)
+                    break
+                except ValueError:
+                    pass
+            if parsed is None:
+                # try M/D/YYYY
+                try:
+                    parts = timestamp.strip().split("/")
+                    if len(parts) == 3:
+                        parsed = datetime(int(parts[2][:4]), int(parts[0]), int(parts[1]))
+                except Exception:
+                    pass
+            if parsed:
+                timestamp = parsed.strftime("%m/%d %H:%M")
 
         table.add_row(
             session_id,
             agent,
-            model_name[:22],
+            model_name,
             phase,
-            run_info[:25],
-            str(timestamp)[:12],
+            run_info[:30],
+            str(timestamp)[:14],
         )
 
     console.print(table)
-    console.print(
-        f"\n[dim]Use 'lm-start session show <ID>' to show or 'lm-start session open <ID>' to open in TUI[/dim]"
-    )
+    hints = ["'lm-start session show <ID>'  → details", "'lm-start session open <ID>'  → open in TUI"]
+    if not active_filters:
+        hints.append("'lm-start session list <model>'  → filter by model")
+    console.print(f"\n[dim]{' | '.join(hints)}[/dim]")
 
 
 @app.command("last")
