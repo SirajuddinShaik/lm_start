@@ -301,7 +301,8 @@ output_format: |
           "enable_expert_parallel": true | false(better for MOE),
           "reasoning_parser": "<LOOKUP FROM vllm_flags.yaml or Insights.md - see parser selection guide above>",
           "enable_auto_tool_choice": true | false,
-          "tool_call_parser": "<LOOKUP FROM vllm_flags.yaml or Insights.md - see parser selection guide above>"
+          "tool_call_parser": "<LOOKUP FROM vllm_flags.yaml or Insights.md - see parser selection guide above>",
+          "decode-context-parallel-size": (if supported and beneficial for this architecture),
         }
       }
     ],

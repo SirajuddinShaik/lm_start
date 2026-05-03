@@ -92,6 +92,10 @@ class VLLMFlagValidator:
                 timeout=30,
             )
             help_text = result.stdout
+            print(f"[DEBUG] vLLM help stdout length: {len(help_text)}, stderr: {result.stderr[:200] if result.stderr else 'None'}", file=sys.stderr)
+            if result.returncode != 0:
+                print(f"[DEBUG] vLLM returned non-zero: {result.returncode}", file=sys.stderr)
+                return self._get_builtin_flags()
         except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as e:
             print(f"Warning: Could not query vLLM help: {e}", file=sys.stderr)
             return self._get_builtin_flags()
@@ -276,21 +280,26 @@ class VLLMFlagValidator:
                 with open(self._cache_file, "r") as f:
                     cache_data = json.load(f)
 
-                self._flag_cache = {
-                    name: FlagInfo(
-                        name=name,
-                        flag_type=FlagType(info["flag_type"]),
-                        has_negative=info.get("has_negative", False),
-                        choices=info.get("choices"),
-                    )
-                    for name, info in cache_data.items()
-                }
-                return self._flag_cache
-            except Exception:
+                # Only use cache if it has actual content
+                if cache_data and len(cache_data) > 0:
+                    self._flag_cache = {
+                        name: FlagInfo(
+                            name=name,
+                            flag_type=FlagType(info["flag_type"]),
+                            has_negative=info.get("has_negative", False),
+                            choices=info.get("choices"),
+                        )
+                        for name, info in cache_data.items()
+                    }
+                    return self._flag_cache
+            except Exception as e:
+                print(f"[DEBUG] Failed to load cache from {self._cache_file}: {e}", file=sys.stderr)
                 pass  # Fall through to parse
 
         # Parse from vLLM
+        print(f"[DEBUG] Cache not found or empty, parsing from vLLM binary: {self.vllm_binary}", file=sys.stderr)
         self._flag_cache = self._parse_help_output()
+        print(f"[DEBUG] Parsed {len(self._flag_cache)} flags from vLLM", file=sys.stderr)
         return self._flag_cache
 
     def validate_and_format(

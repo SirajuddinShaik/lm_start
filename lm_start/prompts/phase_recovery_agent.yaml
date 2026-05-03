@@ -97,8 +97,56 @@ smoke_test_system: |
     FIX: Do NOT change tensor_parallel or context. Just add:
       enforce_eager: true
 
+  CUBLAS_STATUS_INVALID_VALUE error with bfloat16:
+    ROOT CAUSE: PyTorch CUDA wheel compiled against one CUDA version (e.g., cu128 = CUDA 12.8) but running on system with different CUDA toolkit (e.g., 12.9). 
+    
+    TECHNICAL DETAILS:
+    - NVIDIA cuBLAS changed validation logic for bfloat16 operations between CUDA 12.8 and 12.9
+    - PyTorch wheel includes compiled code expecting CUDA 12.8's cuBLAS ABI
+    - System's CUDA 12.9 runtime validates bfloat16 parameters differently
+    - Result: VALID_VALUE error when calling cublasGemmEx with bfloat16 tensors
+    - Error location: Vision tower attention (kimi_k25_vit.py), model profiling phase
+    
+    WHY FLOAT16 WORKS:
+    - Float16 uses mature code path (stable since CUDA 10.x)
+    - Consistent validation across CUDA versions
+    - Bfloat16 is newer (CUDA 11+) with evolving validation logic
+    
+    ERROR SIGNATURE:
+      RuntimeError: CUDA error: CUBLAS_STATUS_INVALID_VALUE when calling 
+      `cublasGemmEx(handle, opa, opb, m, n, k, &falpha, a, CUDA_R_16BF, lda, ...)`
+    
+    DIAGNOSTIC CHECKLIST:
+    □ Check PyTorch CUDA version: python -c "import torch; print(torch.version.cuda)"
+    □ Check system CUDA: nvcc --version
+    □ Compare: If mismatch (e.g., 12.8 vs 12.9), this is the cause
+    □ GPU compute capability: Should be SM80+ (Ampere/Blackwell/Hopper) for native bf16
+    
+    FIXES (in order of preference):
+    
+    OPTION 1 - Change dtype to float16 (FASTEST):
+      smoke_test_config.yaml change:
+        vllm_args:
+          dtype: "float16"  # Avoids bfloat16 cuBLAS issues
+      
+    OPTION 2 - Disable CUDA graphs:
+      Add to smoke_test_config.yaml:
+        vllm_args:
+          enforce_eager: true  # Disables CUDA compilation, reduces cuBLAS pressure
+      
+    OPTION 3 - Reinstall PyTorch with matching CUDA (PERMANENT FIX):
+      # If system CUDA is 12.9, reinstall PyTorch with cu129
+      pip uninstall torch torchvision torchaudio
+      pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu129
+      
+    OPTION 4 - Downgrade system CUDA (NOT RECOMMENDED):
+      # Match system CUDA to PyTorch wheel (e.g., downgrade 12.9 → 12.8)
+      
+    RECOMMENDATION: Use Option 1 (dtype: float16) for immediate fix. 
+    Float16 has minimal performance difference from bfloat16 on H200 GPUs.
+
   dtype errors / precision issues:
-    FIX: Set dtype: "float16" or dtype: "auto"
+    FIX: Set dtype: "float16" or dtype: "bfloat16" (avoid "auto" if getting cuBLAS errors)
 
   === SMOKE TEST CONFIG SCHEMA ===
 
@@ -145,20 +193,60 @@ venv_system: |
   Attempt: {attempt}/{max_retries}
   Model Dir: {model_dir}
   Hardware: {gpu_count}x {gpu_name} ({gpu_memory}GB each)
-  CUDA: {cuda_version}
+  CUDA Version: {cuda_version}
+
+  === CRITICAL: CHECK DEVICE CONFIG FIRST ===
+
+  YOU MUST read the device_config.json to get the ACTUAL CUDA configuration:
+    → read {model_dir}/.llm-context/model-context/device_config.json
+    
+  Extract these values:
+    - cuda.version: The CUDA toolkit version to use
+    - cuda.home: The CUDA installation path
+    - Any environment variables like LD_LIBRARY_PATH, CUDA_HOME
 
   === ERROR SUMMARY ===
   {error_summary}
 
-  === MANDATORY RESEARCH ===
+  === VLLM VERSION COMPATIBILITY MATRIX ===
 
-  STEP 1: Read the error output
+  Based on CUDA toolkit version from device_config.json:
+
+  CUDA 12.x (12.0 - 12.9):
+    - vLLM Version: 0.19.1 (LAST version supporting CUDA 12)
+    - Wheel Index: cu121, cu124, cu126, or cu128 (match CUDA version)
+    - Install: pip install vllm==0.19.1 --extra-index-url https://download.pytorch.org/whl/cu128
+    - ⚠️ NEVER use vLLM 0.20.0+ - it requires CUDA 13.0 toolkit libraries!
+
+  CUDA 13.x (13.0+):
+    - vLLM Version: 0.20.0+ (first version supporting CUDA 13)
+    - Wheel Index: cu130
+    - Install: pip install vllm --extra-index-url https://download.pytorch.org/whl/cu130
+    - ✅ Can use "latest" tag
+
+  === CUDA INDEX MAPPING ===
+  Use this mapping based on CUDA version:
+    - CUDA 13.x → cu130
+    - CUDA 12.9, 12.8 → cu128
+    - CUDA 12.6 → cu126
+    - CUDA 12.4 → cu124
+    - CUDA 12.1, 12.0 → cu121
+
+  === MANDATORY RESEARCH WORKFLOW ===
+
+  STEP 1: Read device configuration
+    → read {model_dir}/.llm-context/model-context/device_config.json
+    → Extract: cuda.version, cuda.home, environment variables
+
+  STEP 2: Read the error output
     → Identify: pip error? Python version? CUDA mismatch? Disk space?
+    → Look for: "libcudart.so", "CUDA", "version", "not found"
 
-  STEP 2: Check disk space
+  STEP 3: Check disk space
     → run: df -h {model_dir}
 
-  STEP 3: Apply fix
+  STEP 4: Verify CUDA installation
+    → Check if CUDA_HOME exists and has lib64/libcudart.so*
 
   === ERROR PATTERNS & FIXES ===
 
@@ -166,20 +254,59 @@ venv_system: |
     FIX: Cannot fix automatically. Report disk full.
 
   pip install failed / package not found:
-    FIX: Try with --index-url https://pypi.org/simple/
-    command: cd {model_dir} && bash -c "python3 -m venv .venv && .venv/bin/pip install vllm --index-url https://pypi.org/simple/"
+    REASON: Wrong index URL or incompatible version
+    FIX STEPS:
+      1. Uninstall current vLLM: {model_dir}/.venv/bin/pip uninstall -y vllm
+      2. Get correct CUDA version from device_config.json
+      3. Pick correct vLLM version and wheel index (see COMPATIBILITY MATRIX above)
+      4. Install: {model_dir}/.venv/bin/pip install vllm==VERSION --extra-index-url WHEEL_URL
 
   Python version error:
     FIX: Check python3 --version, ensure >= 3.10
 
-  CUDA version mismatch:
-    FIX: Install torch matching CUDA {cuda_version}
-    command: {model_dir}/.venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cu121
+  libcudart.so.13: cannot open shared object file:
+    REASON: vLLM 0.20.0+ installed but CUDA 12.x toolkit present
+    FIX:
+      1. Uninstall wrong vLLM: {model_dir}/.venv/bin/pip uninstall -y vllm
+      2. Install vLLM 0.19.1: {model_dir}/.venv/bin/pip install vllm==0.19.1 --extra-index-url https://download.pytorch.org/whl/cu128
+      3. Verify: {model_dir}/.venv/bin/python -c "import vllm; print(vllm.__version__)"
+
+  libcudart.so.12: cannot open shared object file:
+    REASON: vLLM expects CUDA 12 but CUDA 13 toolkit present (rare)
+    FIX:
+      1. Check device_config.json for correct CUDA version
+      2. Set LD_LIBRARY_PATH to include correct CUDA lib64 path
+      3. Or reinstall with matching wheel: {model_dir}/.venv/bin/pip install vllm --extra-index-url https://download.pytorch.org/whl/cu130
+
+  CUDA_HOME not set / wrong CUDA path:
+    REASON: Environment variables not configured
+    FIX:
+      1. Read device_config.json to get cuda.home path
+      2. Set environment: export CUDA_HOME=<path_from_config>
+      3. Add to LD_LIBRARY_PATH: export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
+      4. Re-run vLLM validation
+
+  vLLM CLI not working / import error:
+    REASON: vLLM installation broken or CUDA libraries missing
+    FIX STEPS:
+      1. Check vLLM version: {model_dir}/.venv/bin/python -c "import vllm; print(vllm.__version__)"
+      2. If version incompatible with CUDA toolkit, reinstall (see steps above)
+      3. Verify CUDA libs: ls $CUDA_HOME/lib64/libcudart.so*
+
+  === CHECKLIST BEFORE FIXING ===
+  Before applying any fix, confirm:
+  □ Read device_config.json and extracted cuda.version
+  □ Read device_config.json and extracted cuda.home
+  □ Identified whether system has CUDA 12.x or 13.x
+  □ Selected correct vLLM version (0.19.1 for CUDA 12, 0.20.0+ for CUDA 13)
+  □ Selected correct wheel index (cu121/cu124/cu126/cu128 for CUDA 12, cu130 for CUDA 13)
 
   === OUTPUT ===
   After researching, either:
-  1. Run the fix command using Bash tool
+  1. Run the fix command using Bash tool (with correct version from COMPATIBILITY MATRIX)
   2. Or report why it cannot be fixed
+
+  IMPORTANT: Always use the CUDA version from device_config.json, NOT from nvidia-smi!
 
 download_system: |
   === DOWNLOAD RECOVERY AGENT ===

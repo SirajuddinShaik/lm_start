@@ -170,6 +170,11 @@ def phase_init(
         cpu_count = psutil.cpu_count(logical=False) or psutil.cpu_count() or 64
         total_ram_gb = psutil.virtual_memory().total / (1024**3)
 
+        # Load system config for paths and environment
+        from lm_start import config as lm_config
+        from lm_start import constants
+        system_config = lm_config.load_yaml(str(constants.SYSTEM_FILE))
+        
         device_config = {
             "device_name": "Auto-Detected",
             "description": f"{hw_info.gpu_count}x {hw_info.gpus[0].name if hw_info.gpus else 'No GPU'}"
@@ -197,8 +202,8 @@ def phase_init(
                 "total_ram_gb": round(total_ram_gb, 1),
                 "cpu_count": cpu_count,
             },
-            "paths": {},
-            "environment": {},
+            "paths": system_config.get("paths", {}),
+            "environment": system_config.get("environment", {}),
         }
         device_config_path = (
             model_path / ".llm-context" / "model-context" / "device_config.json"
@@ -291,6 +296,7 @@ def phase_download(
 
     if not result.get("success", False):
         error_msg = result.get("error", f"Download failed for {model_id}")
+        _con.print("")
         _con.print("  [cyan]Agentic recovery for download...[/cyan]")
         if run_agentic_recovery(model_dir, "download", error_msg):
             _con.print("  [green]✓[/green]  Agent recovery succeeded — retrying download")
@@ -353,6 +359,16 @@ def phase_venv(
         return PhaseResult(True, "Virtual environment created")
     else:
         error_msg = f"Virtual environment creation failed"
+        _con.print("")
+        _con.print(f"  [red]✗[/red]  {error_msg}")
+        # Show both stdout and stderr since create_venv.sh outputs to both
+        combined_output = result.stdout + "\n" + result.stderr
+        if combined_output.strip():
+            _con.print("  [dim]Output:[/dim]")
+            lines = [l for l in combined_output.split('\n') if l.strip()]
+            for line in lines[-20:]:  # Show last 20 lines
+                _con.print(f"  [dim]  {line[:100]}[/dim]")
+        _con.print("")
         _con.print("  [cyan]Agentic recovery for venv...[/cyan]")
         if run_agentic_recovery(model_dir, "venv", error_msg):
             _con.print("  [green]✓[/green]  Agent recovery succeeded — retrying venv creation")
@@ -514,9 +530,19 @@ def phase_smoke_test(
     _con.print(f"  [dim]Running smoke test (timeout: {timeout}s)...[/dim]")
 
     # Run smoke test
+    # Load environment from device_config if available
+    device_env = {}
+    if device_config_file.exists():
+        try:
+            dc = _json.load(open(device_config_file))
+            device_env = dc.get("environment", {})
+        except Exception:
+            pass
+    
     env = {
         **os.environ,
         **get_credentials_env(),
+        **device_env,
         "CUDA_VISIBLE_DEVICES": visible_devices,
     }
 
@@ -564,6 +590,16 @@ def phase_smoke_test(
 
             if process.poll() is not None:
                 _con.print(f"  [yellow]⚠[/yellow]  vLLM process died during startup")
+                if smoke_log.exists():
+                    log_content = smoke_log.read_text()
+                    if log_content:
+                        _con.print("")
+                        _con.print("  [red]Error output:[/red]")
+                        error_lines = log_content.split('\n')[-20:]  # Last 20 lines
+                        for line in error_lines:
+                            if line.strip():
+                                _con.print(f"  [dim]{line[:100]}{'...' if len(line) > 100 else ''}[/dim]")
+                        _con.print("")
                 break
 
             try:

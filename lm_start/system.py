@@ -167,25 +167,8 @@ def detect_cuda() -> Dict[str, Any]:
     except ImportError:
         pass
 
-    # Try to get CUDA version from nvidia-smi
-    try:
-        output = subprocess.run(
-            ["nvidia-smi"], capture_output=True, text=True, timeout=10
-        )
-        if output.returncode == 0:
-            # Parse CUDA version from nvidia-smi output
-            for line in output.stdout.split("\n"):
-                if "CUDA Version:" in line:
-                    parts = line.split("CUDA Version:")
-                    if len(parts) >= 2:
-                        version = parts[1].strip().split()[0]
-                        result["available"] = True
-                        result["version"] = version
-                        return result
-    except (subprocess.SubprocessError, FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-
-    # Try nvcc as fallback
+    # Try nvcc first (toolkit version is what we need for installation)
+    # nvidia-smi shows DRIVER version which can be higher than toolkit
     try:
         output = subprocess.run(
             ["nvcc", "--version"], capture_output=True, text=True, timeout=10
@@ -197,6 +180,23 @@ def detect_cuda() -> Dict[str, Any]:
                     parts = line.split("release")
                     if len(parts) >= 2:
                         version = parts[1].strip().split(",")[0]
+                        result["available"] = True
+                        result["version"] = version
+                        return result
+    except (subprocess.SubprocessError, FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+    # Fallback to nvidia-smi (driver version, may not match toolkit)
+    try:
+        output = subprocess.run(
+            ["nvidia-smi"], capture_output=True, text=True, timeout=10
+        )
+        if output.returncode == 0:
+            for line in output.stdout.split("\n"):
+                if "CUDA Version:" in line:
+                    parts = line.split("CUDA Version:")
+                    if len(parts) >= 2:
+                        version = parts[1].strip().split()[0]
                         result["available"] = True
                         result["version"] = version
                         return result

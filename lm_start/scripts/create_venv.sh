@@ -29,50 +29,95 @@ success() { echo -e "${GREEN}[OK]${NC} $1"; }
 warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 
-# Load configuration from lm_start config
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-USER_CONFIG="$HOME/.lm-start/config/system.yaml"
-PACKAGE_CONFIG="$SCRIPT_DIR/config/system.yaml"
+CONFIG_FILE="${HOME}/.lm-start/config/system.yaml"
+export CONFIG_FILE
 
-if [ -f "$USER_CONFIG" ]; then
-    CONFIG_FILE="$USER_CONFIG"
-elif [ -f "$PACKAGE_CONFIG" ]; then
-    CONFIG_FILE="$PACKAGE_CONFIG"
-else
-    error "Config file not found at $USER_CONFIG or $PACKAGE_CONFIG"
+if [ ! -f "$CONFIG_FILE" ]; then
+    status "ERROR: Config file not found at: $CONFIG_FILE"
+    status "Please run: lm-start init"
+    exit 1
 fi
 
 load_config() {
-    if [ -f "$CONFIG_FILE" ]; then
-        status "Loading configuration from $CONFIG_FILE"
-        # Use Python to parse YAML and extract values
-        CONFIG_BASE_DIR=$(python3 -c "import yaml; print(yaml.safe_load(open('$CONFIG_FILE'))['system']['base_dir'])" 2>/dev/null)
-        CONFIG_CUDA_HOME=$(python3 -c "import yaml; print(yaml.safe_load(open('$CONFIG_FILE'))['device']['cuda']['home'])" 2>/dev/null)
-        CONFIG_CUDA_VERSION=$(python3 -c "import yaml; print(yaml.safe_load(open('$CONFIG_FILE'))['device']['cuda']['version'])" 2>/dev/null)
-        CONFIG_HF_HOME=$(python3 -c "import yaml; print(yaml.safe_load(open('$CONFIG_FILE'))['paths']['hf_home'])" 2>/dev/null)
-        CONFIG_LD_LIBRARY_PATH=$(python3 -c "import yaml; print(yaml.safe_load(open('$CONFIG_FILE'))['environment']['LD_LIBRARY_PATH'])" 2>/dev/null)
-        
-        # Validate required values
-        if [ -z "$CONFIG_BASE_DIR" ]; then
-            error "Failed to load base_dir from config: $CONFIG_FILE"
-        fi
-        if [ -z "$CONFIG_HF_HOME" ]; then
-            error "Failed to load hf_home from config: $CONFIG_FILE"
-        fi
-        
-        # Export environment variables from config
-        export HF_HOME="$CONFIG_HF_HOME"
-        if [ -n "$CONFIG_CUDA_HOME" ]; then
-            export CUDA_HOME="$CONFIG_CUDA_HOME"
-            export CUDA_ROOT="$CONFIG_CUDA_HOME"
-        fi
-        if [ -n "$CONFIG_LD_LIBRARY_PATH" ]; then
-            export LD_LIBRARY_PATH="$CONFIG_LD_LIBRARY_PATH"
-        fi
-    else
-        error "Config file not found: $CONFIG_FILE"
-    fi
+    python3 << 'PYTHON_EOF'
+import yaml
+import sys
+import os
+
+config_file = os.environ.get('CONFIG_FILE', '')
+if not config_file or not os.path.exists(config_file):
+    print(f"ERROR: Config file not found: {config_file}", file=sys.stderr)
+    sys.exit(1)
+
+try:
+    with open(config_file, 'r') as f:
+        config = yaml.safe_load(f)
+    
+    # Helper to safely get nested values
+    def get_nested(config, *keys, default=''):
+        try:
+            result = config
+            for key in keys:
+                result = result[key]
+            return str(result) if result is not None else default
+        except (KeyError, TypeError):
+            return default
+    
+    # Extract values
+    base_dir = get_nested(config, 'system', 'base_dir', default='/data/models')
+    cuda_home = get_nested(config, 'device', 'cuda', 'home', default='')
+    cuda_version = get_nested(config, 'device', 'cuda', 'version', default='')
+    hf_home = get_nested(config, 'paths', 'hf_home', default='/data/.cache/huggingface')
+    ld_library_path = get_nested(config, 'environment', 'LD_LIBRARY_PATH', default='')
+    
+    # Print for shell to capture
+    print(f"CONFIG_BASE_DIR={base_dir}")
+    print(f"CONFIG_CUDA_HOME={cuda_home}")
+    print(f"CONFIG_CUDA_VERSION={cuda_version}")
+    print(f"CONFIG_HF_HOME={hf_home}")
+    print(f"CONFIG_LD_LIBRARY_PATH={ld_library_path}")
+    
+    # Also export all environment variables from config
+    env_vars = get_nested(config, 'environment', default={})
+    if isinstance(env_vars, dict):
+        for key, value in env_vars.items():
+            if value is not None:
+                print(f"EXPORT_ENV_{key}={value}")
+    
+except Exception as e:
+    print(f"ERROR: Failed to parse config: {e}", file=sys.stderr)
+    sys.exit(1)
+PYTHON_EOF
 }
+
+# Parse config and export values
+config_output=$(load_config)
+eval "$config_output"
+
+# Validate required values
+if [ -z "$CONFIG_BASE_DIR" ]; then
+    error "Failed to load base_dir from config: $CONFIG_FILE"
+fi
+if [ -z "$CONFIG_HF_HOME" ]; then
+    error "Failed to load hf_home from config: $CONFIG_FILE"
+fi
+
+# Export environment variables from config
+export HF_HOME="$CONFIG_HF_HOME"
+if [ -n "$CONFIG_CUDA_HOME" ]; then
+    export CUDA_HOME="$CONFIG_CUDA_HOME"
+    export CUDA_ROOT="$CONFIG_CUDA_HOME"
+fi
+if [ -n "$CONFIG_LD_LIBRARY_PATH" ]; then
+    export LD_LIBRARY_PATH="$CONFIG_LD_LIBRARY_PATH"
+fi
+
+# Export all environment variables from config
+for env_var in $(compgen -v | grep '^EXPORT_ENV_'); do
+    var_name=${env_var#EXPORT_ENV_}
+    var_value=${!env_var}
+    export "$var_name"="$var_value"
+done
 
 load_config
 
@@ -107,33 +152,29 @@ fi
 status "Python version: $PYTHON_VERSION"
 status "vLLM version: $VLLM_VERSION"
 
-# Detect CUDA version (prefer config, fallback to auto-detect)
+# Detect CUDA version (prefer config, fallback to nvcc, NEVER use nvidia-smi)
+# nvidia-smi shows DRIVER CUDA version which can be higher than toolkit
+# We need the TOOLKIT version for installing wheels
 detect_cuda_version() {
     # First check if config has CUDA version
     if [ -n "$CONFIG_CUDA_VERSION" ]; then
+        status "Using CUDA version from config: $CONFIG_CUDA_VERSION"
         echo "$CONFIG_CUDA_VERSION"
         return
     fi
     
-    # Check nvcc (most reliable)
+    # Check nvcc (most reliable - this is the actual toolkit version)
     if command -v nvcc &> /dev/null; then
         local cuda_version=$(nvcc --version | grep "release" | sed 's/.*release \([0-9]*\.[0-9]*\).*/\1/')
         if [ -n "$cuda_version" ]; then
-            echo "$cuda_version"
-            return
-        fi
-    fi
-    
-    # Check nvidia-smi (can show different version)
-    if command -v nvidia-smi &> /dev/null; then
-        local cuda_version=$(nvidia-smi | grep "CUDA Version" | sed 's/.*CUDA Version: \([0-9]*\.[0-9]*\).*/\1/')
-        if [ -n "$cuda_version" ]; then
+            status "Detected CUDA toolkit version from nvcc: $cuda_version"
             echo "$cuda_version"
             return
         fi
     fi
     
     # Default to 12.9
+    warn "Could not detect CUDA version, defaulting to 12.9"
     echo "12.9"
 }
 
@@ -272,41 +313,9 @@ source "$VENV_PATH/bin/activate"
 status "Upgrading pip..."
 pip install --upgrade pip wheel setuptools
 
-# NOTE: PyTorch installation is optional. vLLM bundles its own PyTorch.
-# Set INSTALL_PYTORCH=true to install PyTorch separately before vLLM.
-# This is useful for debugging CUDA issues or pinning specific PyTorch versions.
 if [ "$INSTALL_PYTORCH" = "true" ]; then
-    status "Installing PyTorch with CUDA $CUDA_VERSION..."
-    case "$CUDA_VERSION" in
-        13.*|12.9*|12.8*)
-            # CUDA 12.8/12.9 use cu128 wheels
-            status "CUDA $CUDA_VERSION detected, using CUDA 12.8 wheels"
-            pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
-            ;;
-        12.9*)
-            status "CUDA $CUDA_VERSION detected, using CUDA 12.8 wheels"
-            pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
-            ;;
-        12.8*)
-            pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
-            ;;
-        12.6*)
-            pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
-            ;;
-        12.4*)
-            pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
-            ;;
-        12.1*)
-            pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-            ;;
-        11.8)
-            pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-            ;;
-        *)
-            warn "Unrecognized CUDA version $CUDA_VERSION, using default PyTorch"
-            pip install torch torchvision torchaudio
-            ;;
-    esac
+    status "Installing PyTorch with CUDA 13.0 wheels..."
+    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130
     success "PyTorch installed: $(python -c 'import torch; print(torch.__version__)')"
 fi
 
@@ -356,23 +365,35 @@ else
 fi
 
 # Install vLLM
-# vLLM bundles its own PyTorch and CUDA libraries.
-# Use PYTORCH_CUDA_INDEX to specify a custom CUDA version if needed.
-status "Installing vLLM $VLLM_VERSION..."
-if [ -n "$PYTORCH_CUDA_INDEX" ]; then
-    status "Using PyTorch index: $PYTORCH_CUDA_INDEX"
-    if [ "$VLLM_VERSION" = "latest" ]; then
-        pip install vllm --extra-index-url "$PYTORCH_CUDA_INDEX"
-    else
-        pip install "vllm==$VLLM_VERSION" --extra-index-url "$PYTORCH_CUDA_INDEX"
-    fi
+# CRITICAL: vLLM wheel must match the CUDA TOOLKIT version (not driver version)
+# Each vLLM version is compiled against specific CUDA toolkit libraries
+# vLLM 0.20.0+ uses CUDA 13.0 libraries and requires CUDA 13.0 toolkit
+# vLLM 0.19.1 and earlier use CUDA 12.x libraries
+
+status "Installing vLLM $VLLM_VERSION with CUDA $CUDA_VERSION..."
+
+# All installations use CUDA 13.0 wheels for consistency
+# All installations use CUDA 13.0 (cu130) wheels
+CUDA_MAJOR=$(echo "$CUDA_VERSION" | cut -d. -f1)
+
+if [ "$VLLM_VERSION" = "latest" ]; then
+    VLLM_VERSION="0.19.0"
+    status "Using vLLM 0.19.0 with CUDA 13.0 wheels"
 else
-    if [ "$VLLM_VERSION" = "latest" ]; then
-        pip install vllm
-    else
-        pip install "vllm==$VLLM_VERSION"
+    # Allow user override but warn if incompatible
+    VLLM_MAJOR=$(echo "$VLLM_VERSION" | cut -d. -f1)
+    VLLM_MINOR=$(echo "$VLLM_VERSION" | cut -d. -f2)
+    
+    if [ "$VLLM_MAJOR" -eq 0 ] && [ "$VLLM_MINOR" -lt 20 ]; then
+        warn "vLLM $VLLM_VERSION is older than 0.20.0"
+        warn "Consider using vLLM 0.20.0+ for best compatibility with CUDA 13.0 wheels"
     fi
 fi
+
+# Always use CUDA 13.0 (cu130) wheels for consistency
+# This matches the successful Kimi-K2.5 configuration
+status "Installing vLLM ${VLLM_VERSION} with CUDA 13.0 wheels..."
+pip install "vllm==${VLLM_VERSION}" --extra-index-url "https://download.pytorch.org/whl/cu130"
 
 success "vLLM installed: $(python -c 'import vllm; print(vllm.__version__)')"
 
