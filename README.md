@@ -3,7 +3,9 @@
 **One-command vLLM model deployment with intelligent OpenCode integration.**
 
 lm-start automates the entire pipeline of deploying Large Language Models locally using vLLM - from hardware detection to optimized configuration generation.
+
 [LLM Inference with vLLM - LinkedIn Post with results](https://www.linkedin.com/posts/sirajuddin-shaik-_llm-inference-vllm-ugcPost-7460782617676804096-saJb?utm_source=share&utm_medium=member_desktop&rcm=ACoAADxng8QBcH6qX8zhibMl0YlMhWvH3xjWH7E)
+
 [![Python](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![vLLM](https://img.shields.io/badge/vLLM-integrated-orange.svg)](https://github.com/vllm-project/vllm)
