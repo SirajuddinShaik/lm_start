@@ -204,13 +204,14 @@ class BenchmarkRunner:
         stderr_output = ""
 
         try:
-            # Run the benchmark
+            # Run the benchmark from model directory
             process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 env=env,
                 text=True,
+                cwd=str(self.venv_python.parent.parent.parent),
             )
 
             try:
@@ -372,7 +373,7 @@ class BenchmarkRunner:
                 {
                     "name": "ctx_32k",
                     "input_len": 32768,
-                    "output_len": 1000,
+                    "output_len": 500,
                 }
             )
 
@@ -382,7 +383,7 @@ class BenchmarkRunner:
                 {
                     "name": "ctx_64k",
                     "input_len": 65536,
-                    "output_len": 4000,
+                    "output_len": 500,
                 }
             )
 
@@ -390,7 +391,7 @@ class BenchmarkRunner:
         if max_context < 32768:
             # Scale down for short context models
             input_len = min(8192, max_context // 2)
-            output_len = min(2048, max_context // 8)
+            output_len = min(500, max_context // 8)
             selected_tests.append(
                 {
                     "name": f"ctx_{input_len}",
@@ -426,6 +427,75 @@ class BenchmarkRunner:
         results["summary"] = self._calculate_summary(results["tests"])
 
         return results
+
+    def run_stress_test(
+        self,
+        config: Dict[str, Any],
+        target_percent: float = 0.75,
+        seq_headroom: int = 2048
+    ) -> Dict[str, Any]:
+        """
+        Run stress test at high concurrency x high sequence length.
+
+        Args:
+            config: vLLM configuration with max_num_seqs and max_model_len
+            target_percent: Target concurrency as % of max_num_seqs (default 0.75)
+            seq_headroom: Tokens to reserve from max_model_len (default 2048)
+
+        Returns:
+            Dict with test result and verdict
+        """
+        max_num_seqs = config.get('max_num_seqs', 128)
+        max_model_len = config.get('max_model_len', 32768)
+
+        # Calculate stress parameters
+        target_concurrency = max(1, int(max_num_seqs * target_percent))
+        target_seq_len = max(1024, max_model_len - seq_headroom)
+
+        self.log(f"Running stress test: {target_concurrency} concurrent @ {target_seq_len} tokens")
+
+        # Run single benchmark
+        result = self.run_serve_benchmark(
+            config=config,
+            input_len=target_seq_len,
+            output_len=500,  # Short output for quick test
+            test_name="stress_test",
+            num_prompts=target_concurrency,  # Saturate concurrency
+            max_concurrency=target_concurrency,
+                request_rate=target_concurrency,
+                timeout=900,
+            )
+
+        # Collect metrics for agent analysis
+        metrics = result.metrics
+        success_rate = metrics.successful_requests / max(metrics.total_requests, 1)
+
+        # Crashed = obvious fail. Otherwise agent analyzes all run results to decide.
+        crashed = not result.success or metrics.failed_requests > metrics.successful_requests
+
+        return {
+            "test_type": "stress_test",
+            "config": config,
+            "raw_result": asdict(result),
+            "crashed": crashed,
+            "test_parameters": {
+                "num_prompts": target_concurrency,
+                "max_concurrency": target_concurrency,
+                "input_len": target_seq_len,
+                "output_len": 500,
+                "target_percent": target_percent,
+                "seq_headroom": seq_headroom,
+            },
+            "metrics": {
+                "success_rate": success_rate,
+                "ttft_ms": metrics.ttft_ms,
+                "tpot_ms": metrics.tpot_ms,
+                "throughput": metrics.throughput_tok_s,
+                "successful_requests": metrics.successful_requests,
+                "failed_requests": metrics.failed_requests,
+            },
+            "timestamp": datetime.now().isoformat(),
+        }
 
     def _calculate_summary(self, tests: Dict[str, Any]) -> Dict[str, Any]:
         """Calculate summary statistics from test results."""

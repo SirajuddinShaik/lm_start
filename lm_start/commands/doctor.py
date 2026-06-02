@@ -215,14 +215,10 @@ def run_doctor():
     console.print()
 
     # Summary
-    console.print(
-        Panel.fit(
-            f"[bold {'green' if all_passed else 'yellow'}]✓ All checks passed[/bold]"
-            if all_passed
-            else f"[bold yellow]⚠ Some checks failed - see hints above for fixes[/bold yellow]",
-            border_style="green" if all_passed else "yellow",
-        )
-    )
+    if all_passed:
+        console.print(Panel.fit("[green]✓ All checks passed[/green]", border_style="green"))
+    else:
+        console.print(Panel.fit("[yellow]⚠ Some checks failed - see hints above for fixes[/yellow]", border_style="yellow"))
 
 
 if __name__ == "__main__":

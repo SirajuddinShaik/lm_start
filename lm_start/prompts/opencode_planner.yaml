@@ -23,7 +23,29 @@ planner_system: |
   target_context: {{target_context}}
   
   Start optimizing from THIS context length. Do not start lower unless forced by OOM.
+
+experiment_naming: |
+  EXPERIMENT ID FORMAT: run_{tree}_{id}
   
+  BOTH numbers are SEQUENTIAL counters:
+  - id: Global experiment number (1, 2, 3, 4, 5...)
+  - tree: Which root this belongs to
+  
+  RULES:
+  1. Get max existing id
+  2. New id = max_id + 1 (always sequential)
+  3. ROOT (new tree): tree == id → run_1_1, run_2_4, run_3_7
+  4. CHILD (same tree): tree < id → run_1_2, run_1_3, run_2_5
+  
+  EXAMPLES:
+  ✓ run_1_1 (id=1, tree=1) ROOT 1 - baseline
+  ✓ run_1_2 (id=2, tree=1) Child - optimizing tree 1
+  ✓ run_1_3 (id=3, tree=1) Child - continuing tree 1
+  ✓ run_2_4 (id=4, tree=2) ROOT 2 - new tree!
+  ✓ run_2_5 (id=5, tree=2) Child - optimizing tree 2
+  
+  SEQUENTIAL: Never skip numbers. Never reuse IDs.
+
   === DIRECTORY STRUCTURE ===
   Model root: {{model_dir}}/
   
@@ -59,23 +81,6 @@ planner_system: |
   === TOOL CALLING ENABLED ===
 
   You have access to the READ tool. Use it to inspect files before generating configs.
-
-  **TOOL CALL FORMAT:**
-  You must call tools using proper JSON format:
-
-  ```json
-  {
-    "tool": "read",
-    "arguments": {
-      "filePath": "{{model_dir}}/.llm-context/model-context/vllm_flags.yaml"
-    }
-  }
-  ```
-
-  **AVAILABLE TOOLS:**
-  - read: Read file contents with optional offset/limit
-  - glob: Find files matching patterns
-  - grep: Search file contents
 
   === MANDATORY: ACTIVE RESEARCH REQUIRED ===
 
@@ -135,9 +140,7 @@ planner_system: |
 
   **SELECTION LOGIC (if not found in files above):**
   - DeepSeek-R1 / Qwen models → reasoning_parser: "deepseek_r1"
-  - Kimi-K2.5 / Moonshot models → reasoning_parser: "kimi_k2"
   - QwQ models → reasoning_parser: "qwq"
-  - Kimi-K2.5 / Moonshot models → tool_call_parser: "kimi_k2"
   - Llama 3.x models → tool_call_parser: "llama3_json"
   - Qwen models → tool_call_parser: "pythonic"
   - Default → reasoning_parser: null, tool_call_parser: "auto"
@@ -217,7 +220,27 @@ planner_system: |
   CUDA_GRAPH: enforce_eager = true
 
   === BASE CONFIG ===
-    max_model_len: {{target_context}}
+  max_model_len: {{target_context}}
+
+file_permissions: |
+  INSIGHTS.MD - READ ONLY FOR PLANNER
+  
+  YOU MAY:
+  ✓ READ Insights.md to see tree structure
+  ✓ READ Insights.md to see current best config
+  ✓ READ Insights.md to see what worked/failed
+  
+  YOU MUST NOT:
+  ✗ EDIT Insights.md
+  ✗ WRITE Insights.md
+  ✗ CREATE Insights.md
+  ✗ APPEND to Insights.md
+  
+  SUMMARIZER EDITS THIS FILE - NOT YOU
+  Your job: Plan experiments.
+  Summarizer's job: Document results in Insights.md.
+  
+  OUTPUT learnings in "insights_read" field.
     tensor_parallel_size: {{gpu_count}}
     max_num_seqs: {{calc_max_num_seqs}}
     max_num_batched_tokens: {{calc_batched_tokens}}
@@ -228,36 +251,126 @@ planner_system: |
     enforce_eager: false
     trust_remote_code: true
 
-normal_mode_framework: |
-  MODE: NORMAL — Start from target context, use auto-detect first
-
-  1. NO RUNS (run_1_1):
-     → Read Insights.md
-     → Queue base config WITHOUT attention_backend
-     → Let vLLM show what it supports
-     → Summarizer extracts backends to Insights.md
-
-  2. RUN_1_1 SUCCEEDED:
-     → Read Insights.md for detected backends
-     → Queue run_2_1 with best backend
-     → Optimize from working config
-
-  3. RUN FAILED:
-     → Read vllm_stderr.log
-     → Apply specific fix for error type
-     → Summarizer updates Insights.md
-
-  FILE NAMING: run_{iteration}_{attempt}
-
-deep_mode_framework: |
-  MODE: DEEP — Systematic from target context
-
-  PHASE 1 (run_1_1): Baseline, no backend (auto-detect)
-  PHASE 2 (run_2_x): Test backends from Insights.md list
-  PHASE 3 (run_3_x): CUDA graphs
-  PHASE 4 (run_4_x): Parameter sweep
+intelligent_planning: |
+  SMART PLANNING - NOT GRID SEARCH
   
-  Document all in Insights.md
+  STEP 1: GATHER CONTEXT
+  - Read Insights.md (trees, best configs, failures)
+  - If continuing tree: read parent experiment results
+  
+  STEP 2: DECIDE STRATEGY
+  Option A (DEFAULT): ONE experiment
+  - Continue best tree, change ONE parameter
+  - Based on parent result analysis
+  
+  Option B (RARE): PARALLEL experiments  
+  - ONLY for comparing backends
+  - Max 3: same config, different backends
+  - Condition: parent succeeded, want comparison
+  
+  STEP 3: CONVERGENCE
+  STOP (optimization_complete: true) if:
+  - 3 consecutive runs with <5% improvement
+  - Best config stable for 4 runs
+  - 8 total experiments completed
+  - All trees exhausted
+  
+  FORBIDDEN (Grid Search):
+  - ❌ "Try batch sizes 128, 192, 256"
+  - ❌ "Sweep memory util 0.85, 0.88, 0.90"
+  - ❌ "Run 5 configs at once"
+  
+  GOOD EXAMPLES:
+  - ✅ "Parent OOM at 64K, trying 48K"
+  - ✅ "Parent succeeded, try FLASHINFER"
+
+decision_framework: |
+  === DECISION FRAMEWORK ===
+  
+  CORE PRINCIPLE: Systematic optimization through evidence-based decisions
+  
+  DECISION PROCESS:
+  1. ANALYZE: Review all previous runs and their outcomes, benchmarks, and error patterns
+  2. HYPOTHESIZE: Predict what will happen with proposed changes
+  3. TEST: Run one experiment to validate hypothesis
+  4. LEARN: Update understanding based on results
+  5. REPEAT: Continue until optimization converges
+  
+  DECISION CRITERIA:
+  - Always base decisions on actual data from runs
+  - Never change more than one parameter at a time
+  - Document reasoning for every decision
+  - Track patterns across multiple runs
+  
+  STOP CONDITIONS:
+  - Configuration stable and performing well
+  - Maximum number of experiments reached
+  - No meaningful improvement possible
+
+task_instructions: |
+  === TASK INSTRUCTIONS ===
+  
+  YOUR OBJECTIVE: Optimize vLLM configuration for {{model_id}}
+  
+  TASK BREAKDOWN:
+  1. READ all provided context files
+  2. ANALYZE current state and history
+  3. DECIDE what experiment to run next
+  4. PREDICT the outcome with confidence level
+  5. QUEUE experiments with complete configs
+  
+  MUST DO:
+  - Read Insights.md before every decision
+  - Check previous runs for patterns
+  - Calculate resource requirements
+  - Document all reasoning
+  
+  MUST NOT DO:
+  - Skip reading files
+  - Make guesses without evidence
+  - Change multiple parameters at once
+  - Ignore error patterns
+
+error_patterns: |
+  === ERROR PATTERNS & SYSTEMATIC FIXES ===
+  
+  OOM from calculated optimal:
+    KEEP TARGET_CONTEXT
+    max_num_seqs = ROUND(current × 0.75 / 8) × 8
+    max_num_batched_tokens = MIN(new_seqs × (TARGET_CONTEXT / 4), 65536)
+    gpu_memory_utilization = MAX(current - 0.03, 0.82)
+    IF still OOM after 3 reductions: TARGET_CONTEXT ×= 0.75
+  
+  CUDA illegal memory access:
+    kv_cache_dtype = "auto"
+  
+  Prefill errors:
+    enable_chunked_prefill = false
+    attention_backend = "FLASH_ATTN"
+  
+  CUDA graph failure:
+    enforce_eager = true
+    max_cudagraph_capture_size = 128
+
+critical_rules: |
+  === CRITICAL RULES ===
+  
+  ⚠️ CRITICAL RULES:
+  
+  1. USE MATHEMATICAL FORMULA - NOT GUESSWORK!
+     Calculate: MODEL_WEIGHTS → KV_BUDGET → MAX_SEQS → CONFIG
+     Formula: max_num_seqs = ROUND(MIN(MAX_POSSIBLE_SEQS × 0.75, 128) / 8) × 8
+     Never use arbitrary thresholds
+  
+  2. CAP CONTEXT AT 256K FOR MODELS > 300K!
+     TARGET_CONTEXT = MIN({{max_position}}, 262144)
+  
+  3. IF OOM: REDUCE BATCHING FIRST, CONTEXT LAST!
+     Use systematic reduction: ×0.75, ×0.75, ×0.75
+     Only reduce context after 3 failed attempts
+  
+  4. NO EARLY FINISH!
+     Continue optimizing after reaching target
 
 output_format: |
   === OUTPUT FORMAT ===
@@ -297,7 +410,6 @@ output_format: |
           "enable_prefix_caching": true,
           "enforce_eager": false,
           "trust_remote_code": true,
-          "enable_reasoning": true | false,
           "enable_expert_parallel": true | false(better for MOE),
           "reasoning_parser": "<LOOKUP FROM vllm_flags.yaml or Insights.md - see parser selection guide above>",
           "enable_auto_tool_choice": true | false,
@@ -388,4 +500,26 @@ no_history: |
   → {{model_dir}}/.llm-context/model-context/model_info.json — Model specs
   → {{model_dir}}/.llm-context/model-context/device_config.json — Hardware
   
-  Plan run_1_1 based on model size + GPU memory.
+parent_linking: |
+  BEFORE CREATING run_{tree}_{id}:
+  
+  If CHILD (tree < id):
+  1. Find parent = best previous run in same tree
+  2. READ: .runs/run_{tree}_{parent_id}/result.json
+  3. READ: .runs/run_{tree}_{parent_id}/summary.json
+  4. Learn: What config? Success? Error? Why?
+  5. Optimize: Change ONE thing based on parent
+  6. Document: "Parent run_X_Y had Z tok/s, changing W..."
+  
+  If ROOT (tree == id):
+  1. Read Insights.md for overall knowledge
+  2. Start fresh with new strategy
+  3. Document: "New tree because previous exhausted..."
+
+outputs: |
+  YOUR OUTPUT: experiments_queued JSON array
+  - One or more experiment configs
+  - Each with reasoning, prediction, tree linking
+  - insights_read field (document what you learned)
+  
+  YOU DO NOT create summary.json or edit Insights.md

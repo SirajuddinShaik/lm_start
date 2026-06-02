@@ -100,6 +100,14 @@ experiment:
   expectation: "Find the best context length and attention backend combination that achieves at least 32768 tokens context without OOM errors. Test FLASHINFER, FLASH_ATTN, FLASH_ATTN_VLLM_V1, XFORMERS, and TORCH_SDPA backends. Prioritize the backend with highest tokens/sec at 32768 context or above. Stop only when 32768 is achieved and stable."
   # Attention backends to test (in priority order)
   attention_backends: ["FLASHINFER", "FLASH_ATTN", "FLASH_ATTN_VLLM_V1", "XFORMERS", "TORCH_SDPA"]
+  # Benchmark registry - list of benchmarks to run after server starts
+  benchmarks:
+    - name: comprehensive
+      enabled: true
+    - name: stress_test
+      enabled: true
+      target_percent: 75
+      seq_headroom: 2048
   # Venv management settings
   venv:
     base_path: ".venv"  # Base venv to copy from

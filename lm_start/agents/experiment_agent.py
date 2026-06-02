@@ -76,6 +76,24 @@ class ExperimentAgent(BaseAgent):
     # Default reduction priority - loaded from flag_knowledge_base.yaml in __init__
     DEFAULT_REDUCTION_PRIORITY = []
 
+    # Benchmark registry - list of benchmarks to run on each working config
+    BENCHMARK_REGISTRY = [
+        {
+            "name": "comprehensive",
+            "method": "run_comprehensive_benchmark",
+            "enabled": True,
+            "description": "Standard throughput tests at 32K/64K context",
+        },
+        {
+            "name": "stress_test",
+            "method": "run_stress_test",
+            "enabled": True,
+            "description": "High concurrency validation at 75% capacity",
+            "target_percent": 0.75,
+            "seq_headroom": 2048,
+        },
+    ]
+
     def __init__(
         self,
         model_dir: str,
@@ -163,6 +181,18 @@ class ExperimentAgent(BaseAgent):
                     kb = yaml.safe_load(f)
                 if "reduction_priority" in kb:
                     self.reduction_priority = kb["reduction_priority"]
+
+            # Load benchmark registry overrides from config
+            try:
+                benchmark_configs = config.experiment.get("benchmarks", [])
+                for bench_config in benchmark_configs:
+                    if "name" in bench_config:
+                        for reg_entry in self.BENCHMARK_REGISTRY:
+                            if reg_entry["name"] == bench_config["name"]:
+                                reg_entry.update(bench_config)
+                                break
+            except Exception:
+                pass  # Use defaults
 
         except Exception:
             # Use defaults if config loading fails
@@ -556,11 +586,11 @@ class ExperimentAgent(BaseAgent):
         return result
 
     def _run_benchmark(self, config: Dict[str, Any], port: int) -> Optional[Dict]:
-        """Run benchmark on a working configuration."""
+        """Run all enabled benchmarks on a working configuration."""
         if not self.enable_benchmarking:
             return None
 
-        self.log(f"Running benchmark for context={config['max_model_len']}")
+        self.log(f"Running benchmarks for context={config['max_model_len']}")
 
         runner = BenchmarkRunner(
             model_id=self.model_id,
@@ -570,15 +600,75 @@ class ExperimentAgent(BaseAgent):
             verbose=self.verbose,
         )
 
+        results = {}
+        all_passed = True
+
+        for bench_spec in self.BENCHMARK_REGISTRY:
+            if not bench_spec.get("enabled", True):
+                self.log(f"Skipping disabled benchmark: {bench_spec['name']}")
+                continue
+
+            bench_name = bench_spec["name"]
+            bench_method = bench_spec["method"]
+            
+            self.log(f"Running benchmark: {bench_name}")
+            
+            try:
+                if not hasattr(runner, bench_method):
+                    self.log(f"Unknown benchmark method: {bench_method}", "warning")
+                    continue
+                
+                method = getattr(runner, bench_method)
+                
+                if bench_name == "comprehensive":
+                    result = method(config, quick_mode=self.quick_mode)
+                    passed = result.get("summary", {}).get("overall_success", False)
+                elif bench_name == "stress_test":
+                    target_percent = bench_spec.get("target_percent", 0.75)
+                    seq_headroom = bench_spec.get("seq_headroom", 2048)
+                    result = method(config, target_percent=target_percent, seq_headroom=seq_headroom)
+                    passed = not result.get("crashed", True)
+                else:
+                    result = method(config)
+                    passed = result.get("success", False)
+                
+                results[bench_name] = result
+                
+                if not passed:
+                    all_passed = False
+                    self.log(f"Benchmark {bench_name} FAILED", "warning")
+                else:
+                    self.log(f"Benchmark {bench_name} PASSED")
+                    
+            except Exception as e:
+                self.log(f"Benchmark {bench_name} ERROR: {e}", "error")
+                results[bench_name] = {"error": str(e), "crashed": True}
+                all_passed = False
+
+        aggregated = {
+            "config": config,
+            "timestamp": datetime.now().isoformat(),
+            "individual_results": results,
+            "all_passed": all_passed,
+            "benchmarks_run": list(results.keys()),
+            "benchmarks_passed": [name for name, r in results.items() 
+                                 if not r.get("crashed") and not r.get("error")],
+        }
+
+        self.benchmark_results.append(aggregated)
+        
+        # Save to benchmark.json in runs directory
+        run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        benchmark_file = self.runs_dir / f"benchmark_{run_timestamp}.json"
         try:
-            result = runner.run_comprehensive_benchmark(
-                config, quick_mode=self.quick_mode
-            )
-            self.benchmark_results.append(result)
-            return result
+            import json
+            with open(benchmark_file, 'w') as f:
+                json.dump(aggregated, f, indent=2, default=str)
+            self.log(f"Benchmark results saved to {benchmark_file}")
         except Exception as e:
-            self.log(f"Benchmark failed: {e}", "error")
-            return None
+            self.log(f"Warning: Could not save benchmark.json: {e}", "warning")
+        
+        return aggregated
 
     def _generate_initial_config(self) -> Dict[str, Any]:
         """Generate initial configuration from theoretical calculator."""

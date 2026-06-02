@@ -676,11 +676,20 @@ class OpenCodeAgenticOrchestrator:
 
         sections = [
             planner_prompts.get("planner_system", ""),
+            planner_prompts.get("experiment_naming", ""),
+            planner_prompts.get("file_permissions", ""),
+            planner_prompts.get("intelligent_planning", ""),
             template_vars["experiment_history"],
             planner_prompts.get("decision_framework", ""),
             planner_prompts.get("error_patterns", ""),
             planner_prompts.get("task_instructions", ""),
             planner_prompts.get("critical_rules", ""),
+            planner_prompts.get("experiment_history_header", ""),
+            planner_prompts.get("failed_run_detail", ""),
+            planner_prompts.get("successful_run_detail", ""),
+            planner_prompts.get("no_history", ""),
+            planner_prompts.get("parent_linking", ""),
+            planner_prompts.get("outputs", ""),
             planner_prompts.get("output_format", ""),
         ]
 
@@ -1117,7 +1126,7 @@ class OpenCodeAgenticOrchestrator:
         return False, time.time() - start
 
     def _run_benchmark(self, port: int, run_dir: Path, config: Dict) -> Dict[str, Any]:
-        """Run benchmark against running vLLM using BenchmarkRunner."""
+        """Run all enabled benchmarks against running vLLM using BenchmarkRunner."""
 
         venv_python = self.model_dir / ".venv" / "bin" / "python"
         runner = BenchmarkRunner(
@@ -1127,22 +1136,89 @@ class OpenCodeAgenticOrchestrator:
             verbose=True,
         )
 
+        # Load benchmark registry from ExperimentAgent
+        from lm_start.agents.experiment_agent import ExperimentAgent
+        benchmark_registry = ExperimentAgent.BENCHMARK_REGISTRY
+
+        # Load config overrides
         try:
-            result = runner.run_comprehensive_benchmark(config, quick_mode=True)
+            import yaml
+            system_config_path = Path.home() / ".lm-start" / "config" / "system.yaml"
+            if system_config_path.exists():
+                with open(system_config_path) as f:
+                    system_config = yaml.safe_load(f)
+                benchmark_configs = system_config.get("experiment", {}).get("benchmarks", [])
+                for bench_config in benchmark_configs:
+                    if "name" in bench_config:
+                        for reg_entry in benchmark_registry:
+                            if reg_entry["name"] == bench_config["name"]:
+                                reg_entry.update(bench_config)
+                                break
+        except Exception:
+            pass
 
-            with open(run_dir / "benchmark.json", "w") as f:
-                json.dump(result, f, indent=2)
+        results = {}
+        all_passed = True
 
-            if result.get("summary", {}).get("overall_success", False):
-                _console.print(f"  [green]✓[/green]  Benchmark complete")
-            else:
-                _console.print(f"  [yellow]⚠[/yellow]  Benchmark had failures")
+        for bench_spec in benchmark_registry:
+            if not bench_spec.get("enabled", True):
+                continue
 
-            return result
+            bench_name = bench_spec["name"]
+            bench_method = bench_spec["method"]
 
-        except Exception as e:
-            _console.print(f"  [red]✗[/red]  Benchmark failed: {e}")
-            return {"error": str(e)}
+            _console.print(f"  [dim]Running benchmark: {bench_name}[/dim]")
+
+            try:
+                if not hasattr(runner, bench_method):
+                    continue
+
+                method = getattr(runner, bench_method)
+
+                if bench_name == "comprehensive":
+                    result = method(config, quick_mode=True)
+                    passed = result.get("summary", {}).get("overall_success", False)
+                elif bench_name == "stress_test":
+                    target_percent = bench_spec.get("target_percent", 0.75)
+                    seq_headroom = bench_spec.get("seq_headroom", 2048)
+                    result = method(config, target_percent=target_percent, seq_headroom=seq_headroom)
+                    passed = not result.get("crashed", True)
+                else:
+                    result = method(config)
+                    passed = result.get("success", False)
+
+                results[bench_name] = result
+
+                if not passed:
+                    all_passed = False
+                    _console.print(f"  [yellow]⚠[/yellow]  {bench_name} had failures")
+                else:
+                    _console.print(f"  [green]✓[/green]  {bench_name} complete")
+
+            except Exception as e:
+                _console.print(f"  [red]✗[/red]  {bench_name} failed: {e}")
+                results[bench_name] = {"error": str(e), "crashed": True}
+                all_passed = False
+
+        aggregated = {
+            "config": config,
+            "timestamp": datetime.now().isoformat(),
+            "individual_results": results,
+            "all_passed": all_passed,
+            "benchmarks_run": list(results.keys()),
+            "benchmarks_passed": [name for name, r in results.items()
+                                 if not r.get("crashed") and not r.get("error")],
+        }
+
+        with open(run_dir / "benchmark.json", "w") as f:
+            json.dump(aggregated, f, indent=2, default=str)
+
+        if all_passed:
+            _console.print(f"  [green]✓[/green]  All benchmarks complete")
+        else:
+            _console.print(f"  [yellow]⚠[/yellow]  Some benchmarks had failures")
+
+        return aggregated
 
     def spawn_summarizer_agent(self, run_id: str, result: Dict) -> Dict[str, Any]:
         """Spawn Run Summarizer Agent via OpenCode CLI."""
